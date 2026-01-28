@@ -1,0 +1,32 @@
+# Sensitive files - NEVER commit these!
+serviceAccountKey.json
+config.py
+
+# Log files
+*.txt
+*.log
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Environment
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files (optional)
+test_*.py
