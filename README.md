@@ -24,7 +24,7 @@ Mobile-ready automated trading bot for MetaTrader 5 with Firebase integration.
 
 1. **Clone the repository:**
 ```bash
-   git clone https://github.com/yourusername/mt5-trading-bot.git
+   git clone https://github.com/rkchellah/mt5-trading-bot.git
    cd mt5-trading-bot
 ```
 
@@ -84,10 +84,37 @@ mt5-trading-bot/
 
 ## Roadmap
 
-- [x] Phase 1: Core infrastructure
-- [ ] Phase 2: Supply & Demand strategy
-- [ ] Phase 3: Mobile app
-- [ ] Phase 4: Client deployment
+- [x] Phase 1: Core infrastructure (MT5, Firebase, Logging)
+- [x] Phase 2: Strategy Implementation & Backtesting
+    - [x] **Flow Strategy**: Trend Continuation with "Sweep + Reclaim" entry logic
+    - [x] **Thunder Strategy**: JeaFx Trend Following (in progress)
+    - [x] **Ringer Strategy**: Recovery & Hedging (planned)
+    - [x] **Advanced Backtesting**: Chunked data fetching, Time-machine simulation, Multi-strategy portfolio support
+- [ ] Phase 3: Mobile app Control Panel
+- [ ] Phase 4: Client deployment & Production Hardening
+
+## Strategies
+
+### 1. Flow (Trend Continuation)
+- **Concept**: Catch trend continuations at Areas of Interest (AOI).
+- **Logic**:
+  - H4/H1 Trend Alignment (Fractal Market Structure)
+  - AOI Detection: Support/Resistance zones with 3+ touches
+  - **Entry**: "Sweep + Reclaim" - Price sweeps liquidity below support/above resistance and reclaims the level.
+  - **Exit**: Fixed RR (1:2) or Break-Even (moves SL to entry at 1R profit).
+  - **Risk**: 1% per trade.
+
+### 2. Thunder (JeaFx Trend)
+- **Concept**: Catch major trend moves using Moving Averages.
+- **Logic**:
+  - MA Cross + Trend Filter.
+  - Dynamic trailing stop for maximum trend capture.
+
+### 3. Ringer (Recovery)
+- **Concept**: Hedge losing trades to recover equity.
+- **Logic**:
+  - Zone recovery / Martingale hybrid (carefully risk-managed).
+  - Uses specific "Ringing" patterns to exit complex drawdowns.
 
 ## License
 
