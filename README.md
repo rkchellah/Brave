@@ -1,6 +1,6 @@
-# MT5 Trading Bot - Phase 1
+# Brave - Flow Strategy
 
-Mobile-ready automated trading bot for MetaTrader 5 with Firebase integration.
+Automated trading bot for MetaTrader 5 focused on the **Flow** trend continuation strategy with Firebase integration.
 
 ## Features
 
@@ -10,6 +10,8 @@ Mobile-ready automated trading bot for MetaTrader 5 with Firebase integration.
 - ✅ Health Monitoring
 - ✅ Trade Verification
 - ✅ Comprehensive Logging
+- ✅ Flow Strategy (fxalexg Trend Continuation)
+- ✅ Project Rules enforced (see [RULES.md](file:///c:/Users/ECSZMLPT0067/Downloads/Back%20Up%20Files/Softs/SeoTools%20Back%20Up%20Files/bin/Projects/ME/Something%20Files/Projects/mt5-trading-bot/RULES.md))
 
 ## Setup
 
@@ -24,8 +26,8 @@ Mobile-ready automated trading bot for MetaTrader 5 with Firebase integration.
 
 1. **Clone the repository:**
 ```bash
-   git clone https://github.com/rkchellah/mt5-trading-bot.git
-   cd mt5-trading-bot
+   git clone https://github.com/rkchellah/Brave.git
+   cd Brave
 ```
 
 2. **Install dependencies:**
@@ -63,15 +65,16 @@ python send_command.py stop
 
 ## Project Structure
 ```
-mt5-trading-bot/
-├── bot.py                  # Main bot
+Brave/
+├── bot.py                  # Main bot (Flow strategy)
+├── flow.py                # Flow strategy implementation
 ├── config.py              # Configuration (NOT in repo)
 ├── config.example.py      # Config template
 ├── setup_firebase.py      # Firebase setup script
 ├── send_command.py        # Command utility
 ├── serviceAccountKey.json # Firebase key (NOT in repo)
-├── test_mt5.py           # MT5 connection test
-├── test_firebase.py      # Firebase connection test
+├── backtest/              # Backtesting scripts
+│   └── results/           # Backtest trade results (CSV)
 └── README.md             # This file
 ```
 
@@ -85,36 +88,33 @@ mt5-trading-bot/
 ## Roadmap
 
 - [x] Phase 1: Core infrastructure (MT5, Firebase, Logging)
-- [x] Phase 2: Strategy Implementation & Backtesting
+- [x] Phase 2: Flow Strategy Implementation & Backtesting
     - [x] **Flow Strategy**: Trend Continuation with "Sweep + Reclaim" entry logic
-    - [x] **Thunder Strategy**: JeaFx Trend Following (in progress)
-    - [x] **Ringer Strategy**: Recovery & Hedging (planned)
-    - [x] **Advanced Backtesting**: Chunked data fetching, Time-machine simulation, Multi-strategy portfolio support
+    - [x] **Advanced Backtesting**: Chunked data fetching, Time-machine simulation
+    - [x] **Trade Management**: Break-even at 80% TP, relaxed exit logic
 - [ ] Phase 3: Mobile app Control Panel
 - [ ] Phase 4: Client deployment & Production Hardening
 
-## Strategies
+## Flow Strategy
 
-### 1. Flow (Trend Continuation)
-- **Concept**: Catch trend continuations at Areas of Interest (AOI).
-- **Logic**:
-  - H4/H1 Trend Alignment (Fractal Market Structure)
-  - AOI Detection: Support/Resistance zones with 3+ touches
-  - **Entry**: "Sweep + Reclaim" - Price sweeps liquidity below support/above resistance and reclaims the level.
-  - **Exit**: Fixed RR (1:2) or Break-Even (moves SL to entry at 1R profit).
-  - **Risk**: 1% per trade.
+### Concept
+Catch trend continuations at Areas of Interest (AOI) using multi-timeframe alignment.
 
-### 2. Thunder (JeaFx Trend)
-- **Concept**: Catch major trend moves using Moving Averages.
-- **Logic**:
-  - MA Cross + Trend Filter.
-  - Dynamic trailing stop for maximum trend capture.
+### Logic
+- **H4/H1 Trend Alignment**: Both timeframes must show the same trend direction (Fractal Market Structure)
+- **AOI Detection**: Support/Resistance zones with 3+ touches (zone clustering approach)
+- **Entry Pattern**: "Sweep + Reclaim" - Price sweeps liquidity below support/above resistance and reclaims the level
+- **Session Filter**: Only trades during London (08:00-11:00) and NY (13:00-16:00) UTC
+- **Exit**: Fixed RR (1:2) with trailing stop at 80% of TP distance
+- **Risk**: 1% per trade
 
-### 3. Ringer (Recovery)
-- **Concept**: Hedge losing trades to recover equity.
-- **Logic**:
-  - Zone recovery / Martingale hybrid (carefully risk-managed).
-  - Uses specific "Ringing" patterns to exit complex drawdowns.
+### Entry Confirmation
+- **Engulfing candle** at AOI, OR
+- **Large body** (>75% intensity), OR
+- **Pin bar** (wick >60% of candle range)
+
+### Source
+Based on fxalexg's "1 Hour Day Trading Strategy"
 
 ## License
 

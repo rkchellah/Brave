@@ -2,9 +2,12 @@
 serviceAccountKey.json
 config.py
 
-# Log files
+# Log files and data caches
+logs/
+data/
 *.txt
 *.log
+backtest/results/*.csv
 
 # Python cache
 __pycache__/
@@ -14,6 +17,7 @@ __pycache__/
 .Python
 
 # Environment
+.venv/
 venv/
 env/
 ENV/
@@ -29,4 +33,4 @@ ENV/
 Thumbs.db
 
 # Test files (optional)
-test_*.py
+test_*.py
