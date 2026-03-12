@@ -11,6 +11,7 @@ Automated trading bot for MetaTrader 5 focused on the **Flow** trend continuatio
 - ✅ Trade Verification
 - ✅ Comprehensive Logging
 - ✅ Flow Strategy (fxalexg Trend Continuation)
+- ✅ Thunder Strategy (EMA Stack Scalper + 1% Risk Auto-Trading)
 - ✅ Project Rules enforced (see [RULES.md](file:///c:/Users/ECSZMLPT0067/Downloads/Back%20Up%20Files/Softs/SeoTools%20Back%20Up%20Files/bin/Projects/ME/Something%20Files/Projects/mt5-trading-bot/RULES.md))
 - ✅ Architecture Document (see [ARCHITECTURE.md](file:///c:/Users/ECSZMLPT0067/Downloads/Back%20Up%20Files/Softs/SeoTools%20Back%20Up%20Files/bin/Projects/ME/Something%20Files/Projects/mt5-trading-bot/ARCHITECTURE.md))
 

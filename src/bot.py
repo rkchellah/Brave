@@ -9,6 +9,10 @@ import numpy as np
 import time
 import logging
 import sys
+import os
+import traceback
+from datetime import datetime
+
 # We add the project root to sys.path so we can import config.py
 # now that the bot has been moved into the src/ folder.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -471,6 +475,11 @@ class BraveBot:
                     f"RR: {signal['risk_reward_ratio']}"
                 )
 
+                # ── Auto-execution ──────────────────────────────────────────
+                # We execute the trade automatically if it meets all strategy criteria.
+                # The user can still manually close the trade in the MT5 terminal.
+                self.execute_signal(symbol, signal, config)
+
                 # Push alert to Firebase for mobile review
                 if self.firebase_enabled:
                     try:
@@ -508,76 +517,106 @@ class BraveBot:
     # ═══════════════════════════════════════════════════════════════
 
     def execute_signal(self, symbol: str, signal: dict, config: dict):
-        """Execute a signal from any strategy."""
+        """Execute a signal from any strategy with 1% risk-based lot sizing."""
         try:
             strategy_name = signal.get('strategy_name', self.active_strategy_name)
 
-            # Re-verify market is still open before sending order
+            # Re-verify market is still open
             market_status = self._refresh_market_status(force=True)
             if market_status.get(symbol) != "OPEN":
                 logging.warning(f"[{symbol}] Market closed — cannot execute")
                 return None
 
-            tick = mt5.symbol_info_tick(symbol)
-            info = mt5.symbol_info(symbol)
-            if tick is None or info is None:
-                logging.error(f"[{symbol}] Could not get tick/symbol info")
+            account = mt5.account_info()
+            tick    = mt5.symbol_info_tick(symbol)
+            info    = mt5.symbol_info(symbol)
+            if account is None or tick is None or info is None:
+                logging.error(f"[{symbol}] Could not get account/tick/symbol info")
                 return None
 
             direction  = signal['direction']
             entry      = signal['entry_price']
             sl         = signal['suggested_sl']
             tp         = signal['suggested_tp']
-            lot        = config.get('lot_size', LOT_SIZE)
-            order_type = mt5.ORDER_TYPE_BUY  if direction == "BUY"  else mt5.ORDER_TYPE_SELL
-            price      = tick.ask            if direction == "BUY"  else tick.bid
+            
+            # ── 1% Risk-Based Lot Sizing ──────────────────────────────────
+            # We calculate lot size so that hitting SL results in a 1% balance loss.
+            # This matches the successful backtest results (+273% return logic).
+            risk_per_trade = account.balance * 0.01  # $1 for $100 balance
+            price_risk     = abs(entry - sl)
+            
+            if price_risk == 0:
+                logging.error(f"[{symbol}] Entry and SL are identical — skipping")
+                return None
+
+            # Lot calculation: risk / (price_risk * contract_size)
+            # Default contract size for FX is 100,000.
+            # We use info.trade_contract_size for accuracy across all symbols (Gold, Indices).
+            lot = risk_per_trade / (price_risk * info.trade_contract_size)
+            
+            # Normalize lot to symbol's volume step and range
+            lot = max(info.volume_min, min(info.volume_max, round(lot / info.volume_step) * info.volume_step))
+            
+            logging.info(f"[{symbol}] Risk sizing: Account=${account.balance:.2f} | "
+                         f"Risk=${risk_per_trade:.2f} | Lot={lot:.2f}")
+
+            # ── Order Configuration ──────────────────────────────────────
+            # "Thunder" uses STOP orders (BUY_STOP / SELL_STOP) as per backtest.
+            # If entry_price is already exceeded, we fallback to MARKET execution.
+            order_type_map = {
+                ("BUY", "STOP"):   mt5.ORDER_TYPE_BUY_STOP,
+                ("SELL", "STOP"):  mt5.ORDER_TYPE_SELL_STOP,
+                ("BUY", "MARKET"): mt5.ORDER_TYPE_BUY,
+                ("SELL", "MARKET"): mt5.ORDER_TYPE_SELL,
+            }
+            
+            # Use provided order_type or default to MARKET
+            sig_type   = signal.get('order_type', 'MARKET')
+            order_type = order_type_map.get((direction, sig_type), mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL)
+            
+            # For STOP orders, we use the signal's entry price.
+            # For MARKET orders, we use current ask/bid.
+            price = entry if sig_type != "MARKET" else (tick.ask if direction == "BUY" else tick.bid)
 
             request = {
-                "action":       mt5.TRADE_ACTION_DEAL,
+                "action":       mt5.TRADE_ACTION_PENDING if sig_type == "STOP" else mt5.TRADE_ACTION_DEAL,
                 "symbol":       symbol,
-                "volume":       lot,
+                "volume":       round(lot, 2),
                 "type":         order_type,
                 "price":        price,
                 "sl":           sl,
                 "tp":           tp,
                 "deviation":    20,
                 "magic":        300001,
-                "comment":      f"brave_{strategy_name}",
+                "comment":      f"brave_{strategy_name[:10]}", # comment max 31 chars
                 "type_time":    mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
+                "type_filling": mt5.ORDER_FILLING_IOC if sig_type == "MARKET" else mt5.ORDER_FILLING_RETURN,
             }
 
             result = mt5.order_send(request)
 
-            if result.retcode == mt5.TRADE_RETCODE_DONE:
-                logging.info(f"[{symbol}] Order executed — Ticket: {result.order}")
-
-                # Verify and log to Firebase
-                time.sleep(2)
-                positions = mt5.positions_get(ticket=result.order)
-                verified  = positions is not None and len(positions) > 0
-
-                if verified and self.firebase_enabled:
+            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                logging.info(f"[{symbol}] Order submitted successfully — Result: {result.retcode}")
+                # Log to Firebase
+                if self.firebase_enabled:
                     try:
                         self.trades_ref.push({
                             'timestamp':  datetime.now().isoformat(),
                             'symbol':     symbol,
-                            'type':       direction,
+                            'type':       f"{direction}_{sig_type}",
                             'entry':      price,
                             'sl':         sl,
                             'tp':         tp,
                             'lot':        lot,
-                            'ticket':     result.order,
+                            'ticket':     getattr(result, 'order', 0),
                             'strategy':   strategy_name,
-                            'verified':   verified,
                         })
                     except Exception as e:
                         logging.error(f"[{symbol}] Failed to log trade to Firebase: {e}")
-
                 return result
-
             else:
-                logging.error(f"[{symbol}] Order failed: {result.retcode} — {result.comment}")
+                err_msg = result.comment if result else "No result from order_send"
+                logging.error(f"[{symbol}] Order failed: {err_msg}")
                 return None
 
         except Exception as e:

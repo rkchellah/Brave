@@ -18,6 +18,7 @@
 - [x] Breakout Range Entry (M15)
 - [x] ATR Scaling
 - [x] Backtest Simulation
+- [x] Live Auto-Execution & 1% Risk Sizing
 
 ## Maintenance & DevOps
 - [x] Project Renaming to `Brave`

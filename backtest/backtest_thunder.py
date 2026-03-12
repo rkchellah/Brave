@@ -212,6 +212,7 @@ def get_h4_context(
 ) -> list[dict] | None:
     # We use binary search to locate H4 context efficiently within large candle datasets
     # while strictly avoiding any lookahead bias by only choosing candles before the M15 time.
+    lo, hi, idx = 0, len(h4_candles) - 1, -1
     while lo <= hi:
         mid = (lo + hi) // 2
         if h4_candles[mid]["time"] < current_m15_time:
