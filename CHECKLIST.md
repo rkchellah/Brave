@@ -22,6 +22,7 @@
 ## Maintenance & DevOps
 - [x] Project Renaming to `Brave`
 - [x] Create `RULES.md` and `CHECKLIST.md`
+- [x] Create `ARCHITECTURE.md`
 - [x] Project Reorganization (Results folder & Cleanup)
 - [x] Source Organization (src/ folder)
 - [x] Code Comment Coverage (Rule-compliant)

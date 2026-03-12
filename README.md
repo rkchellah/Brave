@@ -12,6 +12,7 @@ Automated trading bot for MetaTrader 5 focused on the **Flow** trend continuatio
 - ✅ Comprehensive Logging
 - ✅ Flow Strategy (fxalexg Trend Continuation)
 - ✅ Project Rules enforced (see [RULES.md](file:///c:/Users/ECSZMLPT0067/Downloads/Back%20Up%20Files/Softs/SeoTools%20Back%20Up%20Files/bin/Projects/ME/Something%20Files/Projects/mt5-trading-bot/RULES.md))
+- ✅ Architecture Document (see [ARCHITECTURE.md](file:///c:/Users/ECSZMLPT0067/Downloads/Back%20Up%20Files/Softs/SeoTools%20Back%20Up%20Files/bin/Projects/ME/Something%20Files/Projects/mt5-trading-bot/ARCHITECTURE.md))
 
 ## Setup
 
