@@ -630,8 +630,15 @@ class BraveBot:
     # ═══════════════════════════════════════════════════════════════
 
     def _count_positions(self, symbol: str | None = None) -> int:
+        # Check active positions
         positions = mt5.positions_get(symbol=symbol) if symbol else mt5.positions_get()
-        return len(positions) if positions else 0
+        position_count = len(positions) if positions else 0
+
+        # Also check pending orders — a pending STOP not yet triggered is NOT a position
+        orders = mt5.orders_get(symbol=symbol) if symbol else mt5.orders_get()
+        order_count = len(orders) if orders else 0
+
+        return position_count + order_count
 
     def _get_config(self) -> dict:
         if self.firebase_enabled:
