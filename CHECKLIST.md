@@ -23,6 +23,7 @@
 - [x] Project Renaming to `Brave`
 - [x] Create `RULES.md` and `CHECKLIST.md`
 - [x] Project Reorganization (Results folder & Cleanup)
+- [x] Source Organization (src/ folder)
 - [x] Code Comment Coverage (Rule-compliant)
 - [x] Final Cleanup (Data/Logs)
 - [x] Push to GitHub

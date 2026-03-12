@@ -42,20 +42,20 @@ Automated trading bot for MetaTrader 5 focused on the **Flow** trend continuatio
 
 4. **Setup Firebase:**
 ```bash
-   python setup_firebase.py
+   python src/setup_firebase.py
 ```
 
 5. **Run the bot:**
 ```bash
-   python bot.py
+   python src/bot.py
 ```
 
 ## Usage
 
 ### Start/Stop Bot
 ```bash
-python send_command.py start
-python send_command.py stop
+python src/send_command.py start
+python src/send_command.py stop
 ```
 
 ### Monitor
@@ -66,12 +66,15 @@ python send_command.py stop
 ## Project Structure
 ```
 Brave/
-├── bot.py                  # Main bot (Flow strategy)
-├── flow.py                # Flow strategy implementation
+├── src/                  # Main bot and strategy logic
+│   ├── bot.py             # Main entry point
+│   ├── thunder.py         # Thunder strategy
+│   ├── flow.py            # Flow strategy
+│   ├── manage_config.py   # Config manager
+│   ├── send_command.py    # Command utility
+│   └── setup_firebase.py  # Firebase setup script
 ├── config.py              # Configuration (NOT in repo)
 ├── config.example.py      # Config template
-├── setup_firebase.py      # Firebase setup script
-├── send_command.py        # Command utility
 ├── serviceAccountKey.json # Firebase key (NOT in repo)
 ├── backtest/              # Backtesting scripts
 │   └── results/           # Backtest trade results (CSV)
