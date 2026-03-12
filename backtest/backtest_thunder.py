@@ -26,9 +26,12 @@ import sys
 import logging
 from datetime import datetime, timezone, time as dt_time
 
-# We insert project root to sys.path to allow importing from the parent directory
-# without needing to install the project as a package.
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+# We insert the project root and src folder to allow importing from both levels.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)
+sys.path.insert(0, _PROJECT_ROOT)
+sys.path.insert(0, os.path.join(_PROJECT_ROOT, "src"))
+
 from thunder import Thunder
 
 # ═══════════════════════════════════════════════════════════════════════

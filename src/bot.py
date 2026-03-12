@@ -8,9 +8,10 @@ from firebase_admin import credentials, db
 import numpy as np
 import time
 import logging
-import os
-import traceback
-from datetime import datetime, timedelta, timezone
+import sys
+# We add the project root to sys.path so we can import config.py
+# now that the bot has been moved into the src/ folder.
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from config import (
     MT5_LOGIN, MT5_PASSWORD, MT5_SERVER,
