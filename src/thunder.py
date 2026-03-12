@@ -79,11 +79,6 @@ class Thunder:
         """
         logging.info(f"   [{symbol}] Thunder: Starting EMA stack analysis...")
 
-        # ── Session filter (live mode only) ──────────────────────
-        if provided_rates is None and not self._is_active_session():
-            logging.info(f"   [{symbol}] Thunder: Outside London/NY session")
-            return None
-
         # ── Fetch candles ─────────────────────────────────────────
         h4  = self._get_candles(symbol, self.TF_H4,  self.H4_CANDLES,  provided_rates)
         m15 = self._get_candles(symbol, self.TF_M15, self.M15_CANDLES, provided_rates)

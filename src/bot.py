@@ -63,6 +63,7 @@ class BraveBot:
     PAIR_REFRESH_INTERVAL = 3600  # seconds between dynamic pair re-selection
 
     def __init__(self):
+        self.firebase_enabled     = False  # ← MUST BE FIRST
         self.is_running           = False
         self.last_health_check    = datetime.now()
         self.last_market_check    = None
