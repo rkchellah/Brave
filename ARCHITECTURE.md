@@ -32,9 +32,10 @@ The mobile app never touches MT5 directly — it only reads/writes Firebase.
 ```
 Brave/
 ├── src/                      # Source code
-│   ├── bot.py                # Main bot — BraveBot class
+│   ├── bot.py                # Main bot — BraveBot class (v2.0)
 │   ├── thunder.py            # Thunder strategy — EMA Stack Scalper
 │   ├── flow.py               # Flow strategy — Trend Continuation
+│   ├── news_filter.py        # News filtering logic
 │   ├── manage_config.py      # CLI utility: update Firebase config
 │   ├── send_command.py       # CLI utility: start/stop bot
 │   └── setup_firebase.py     # One-time Firebase setup script
@@ -179,10 +180,12 @@ bot.run()
         ├── _check_signals(config)
         │     ├── _load_active_strategy()   ← reads brave_config, hot-swaps if changed
         │     ├── _select_pairs() every 1hr ← scores by spread + volatility
-        │     ├── _open_markets()           ← checks MT5 symbol trade mode + tick age
+        │     ├── _open_markets()           ← checks MT5 status
         │     └── for each open pair:
-        │           └── strategy.analyze(symbol) → signal dict or None
-        │                 └── if signal: push to Firebase /alerts
+        │           ├── NewsFilter.is_safe_to_trade() ← skips during high-impact news
+        │           ├── _count_positions()            ← checks positions + pending orders
+        │           └── strategy.analyze(symbol)      → signal dict or None
+        │                 └── if signal: execute_signal() + push to Firebase
         └── sleep CHECK_INTERVAL (60s)
 ```
 
@@ -362,9 +365,6 @@ POINT_SIZES = {
 - Mobile app (Phase 3) — Firebase structure is ready, app is not built
 - Ringer strategy — not started
 - Second scalping strategy for Brave bundle — pending Thunder backtest results
-- Auto-execution — bot currently pushes alerts to Firebase for manual review;
-  `execute_signal()` in bot.py is built and ready but not called from the main loop yet
-- Log rotation — logs grow unbounded, needs a fix before production
 - Auto-restart on crash — needs systemd or equivalent for production VPS
 
 ---

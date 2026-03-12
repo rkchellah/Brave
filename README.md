@@ -8,10 +8,13 @@ Automated trading bot for MetaTrader 5 focused on the **Flow** trend continuatio
 - ✅ Firebase Real-time Database
 - ✅ Remote Control (Mobile-ready)
 - ✅ Health Monitoring
-- ✅ Trade Verification
+- ✅ Auto-Trading Execution
+- ✅ Dynamic 1% Risk Management
+- ✅ News Filtering (ForexFactory integration)
+- ✅ Daily Log Rotation (7-day history)
 - ✅ Comprehensive Logging
+- ✅ Thunder Strategy (EMA Stack Scalper)
 - ✅ Flow Strategy (fxalexg Trend Continuation)
-- ✅ Thunder Strategy (EMA Stack Scalper + 1% Risk Auto-Trading)
 - ✅ Project Rules enforced (see [RULES.md](file:///c:/Users/ECSZMLPT0067/Downloads/Back%20Up%20Files/Softs/SeoTools%20Back%20Up%20Files/bin/Projects/ME/Something%20Files/Projects/mt5-trading-bot/RULES.md))
 - ✅ Architecture Document (see [ARCHITECTURE.md](file:///c:/Users/ECSZMLPT0067/Downloads/Back%20Up%20Files/Softs/SeoTools%20Back%20Up%20Files/bin/Projects/ME/Something%20Files/Projects/mt5-trading-bot/ARCHITECTURE.md))
 
@@ -69,9 +72,10 @@ python src/send_command.py stop
 ```
 Brave/
 ├── src/                  # Main bot and strategy logic
-│   ├── bot.py             # Main entry point
+│   ├── bot.py             # Main entry point (Phase 2)
 │   ├── thunder.py         # Thunder strategy
 │   ├── flow.py            # Flow strategy
+│   ├── news_filter.py     # High-impact news filter
 │   ├── manage_config.py   # Config manager
 │   ├── send_command.py    # Command utility
 │   └── setup_firebase.py  # Firebase setup script
@@ -93,12 +97,13 @@ Brave/
 ## Roadmap
 
 - [x] Phase 1: Core infrastructure (MT5, Firebase, Logging)
-- [x] Phase 2: Flow Strategy Implementation & Backtesting
-    - [x] **Flow Strategy**: Trend Continuation with "Sweep + Reclaim" entry logic
-    - [x] **Advanced Backtesting**: Chunked data fetching, Time-machine simulation
-    - [x] **Trade Management**: Break-even at 80% TP, relaxed exit logic
+- [x] Phase 2: Live Trading & Stability
+    - [x] **Auto-Execution**: 1% risk-based lot sizing
+    - [x] **News Filter**: FF Calendar integration
+    - [x] **Stability**: Log rotation + SSE reconnect handling
+    - [x] **Thunder Strategy**: EMA Stack Scalper (+273% backtest)
 - [ ] Phase 3: Mobile app Control Panel
-- [ ] Phase 4: Client deployment & Production Hardening
+- [ ] Phase 4: Production Hardening
 
 ## Flow Strategy
 
