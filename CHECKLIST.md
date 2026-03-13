@@ -25,7 +25,7 @@
 
 ### Phase 2 Bug Fixes + Stability
 - [x] `firebase_enabled` AttributeError fixed — attribute now set first in `__init__`
-- [x] Session filter removed — Brave trades 24/7 regardless of session
+- [x] **Soft Session Filter added** — Brave trades 24/7 but tags trades with LONDON/NEW_YORK/OTHER for analysis
 - [x] **Duplicate order bug fixed** — `_count_positions()` now counts pending STOP
       orders AND active positions (was only counting active positions before,
       causing the same signal to stack 10+ orders per hour)
@@ -33,10 +33,11 @@
 - [x] **News filter added** — `news_filter.py` pauses trading ±30 min around
       high-impact ForexFactory events per symbol's currencies
 - [x] Firebase SSE timeout downgraded to DEBUG — no longer spams logs
+- [x] **Daily Loss Limiter (Kill Switch) added** — pauses bot if daily loss exceeds 5%
 
 ### Known Remaining Issues
 - [ ] US30/NAS100 returning no data from broker (broker may not support indices on demo)
-- [ ] USDJPY appearing in pair selection — not in original Thunder backtest symbols
+- [x] USDJPY appearing in pair selection — excluded until backtested
 
 ---
 
@@ -54,7 +55,7 @@
 ## Phase 4 — Production Hardening ❌ NOT STARTED
 - [ ] VPS setup (Windows VPS with MT5 terminal pre-installed)
 - [ ] Auto-restart on crash (Task Scheduler or NSSM service wrapper)
-- [ ] Kill switch — auto-stop if drawdown exceeds X% in a session
+- [x] Kill switch — auto-stop if drawdown exceeds 5% in a daily session
 - [ ] Second strategy for Brave bundle (pending decision after more demo data)
 - [ ] Live account migration checklist
 
@@ -82,4 +83,4 @@ Backtest was run on EURUSD, GBPUSD, XAUUSD only.
 1. Watch demo account for 2 weeks — do NOT change Thunder parameters during this period
 2. Log real win rate vs backtest win rate — expect some divergence, that is normal
 3. Decide on second strategy for Brave bundle based on demo observations
-4. Fix pair selection to exclude USDJPY until it is backtested on Thunder
+4. [x] Fix pair selection to exclude USDJPY until it is backtested on Thunder

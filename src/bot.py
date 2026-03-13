@@ -17,7 +17,7 @@ import logging.handlers
 import sys
 import os
 import traceback
-from datetime import datetime
+from datetime import datetime, time, timezone
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -71,6 +71,12 @@ class BraveBot:
     HEALTH_CHECK_INTERVAL = 600    # seconds between health checks
     PAIR_REFRESH_INTERVAL = 3600   # seconds between pair re-scoring
 
+    # ── Session windows (UTC) ─────────────────────────────────────
+    LONDON_OPEN  = time(8, 0)
+    LONDON_CLOSE = time(11, 0)
+    NY_OPEN      = time(13, 0)
+    NY_CLOSE     = time(16, 0)
+
     def __init__(self):
         # firebase_enabled MUST be set first — the Firebase listener
         # thread fires before __init__ completes and calls _update_status
@@ -81,6 +87,8 @@ class BraveBot:
         self.last_pair_refresh    = None
         self.market_status_cache  = {}
         self.active_pairs         = []
+        self._session_start_equity = None
+        self._last_session_date    = None
 
         self.active_strategy_name: str | None = None
         self.strategy_instance                = None
@@ -304,6 +312,7 @@ class BraveBot:
 
                 point  = info.point
                 if info.digits in (5, 3):
+                    # Multiplier for 5/3 degimal brokers to treat 1.0 as 1 pip
                     point *= 10
 
                 spread = (tick.ask - tick.bid) / point
@@ -316,6 +325,9 @@ class BraveBot:
                 spread_score     = max(0, 10 - spread)
                 volatility_score = min(avg_range / 10, 10)
                 major_bonus      = 3 if symbol in ["EURUSD", "GBPUSD", "XAUUSD"] else 0
+
+                if symbol == "USDJPY":  # Pending backtest
+                    continue
 
                 scored.append({"symbol": symbol, "score": spread_score + volatility_score + major_bonus})
 
@@ -407,12 +419,39 @@ class BraveBot:
             logging.error("No valid strategy — skipping")
             return
 
-        # Refresh pairs every hour
-        now = datetime.now()
+        # ── Daily Loss Limiter ────────────────────────────────────────
+        account = mt5.account_info()
+        if account:
+            today = datetime.now().date().isoformat()
+            
+            if self._last_session_date != today or self._session_start_equity is None:
+                # Use current equity as the high-water mark for the new daily session
+                self._session_start_equity = account.equity
+                self._last_session_date    = today
+                logging.info(f"Daily session started — Equity: ${self._session_start_equity:.2f}")
+
+            session_pnl = account.equity - self._session_start_equity
+            loss_limit  = -(self._session_start_equity * 0.05)
+
+            if session_pnl <= loss_limit:
+                logging.warning(
+                    f"Daily loss limit hit (${session_pnl:.2f} <= ${loss_limit:.2f}) "
+                    "— bot paused for today"
+                )
+                self.is_running = False
+                self._update_status({
+                    "is_running":     False,
+                    "trading_active": False,
+                    "paused_reason":  "DAILY_LOSS_LIMIT",
+                    "pnl_at_pause":   session_pnl
+                })
+                return
+
         if (
             self.last_pair_refresh is None
             or (now - self.last_pair_refresh).total_seconds() >= self.PAIR_REFRESH_INTERVAL
         ):
+            # Recalculate best pairs periodically to adapt to changing volatility/spreads
             self.active_pairs      = self._select_pairs(max_pairs=3)
             self.last_pair_refresh = now
 
@@ -563,6 +602,7 @@ class BraveBot:
             if result and result.retcode == mt5.TRADE_RETCODE_DONE:
                 logging.info(f"[{symbol}] Order placed — ticket: {getattr(result, 'order', 0)}")
                 if self.firebase_enabled:
+                    # Log execution details for remote monitoring and later CSV analysis
                     try:
                         self.trades_ref.push({
                             "timestamp": datetime.now().isoformat(),
@@ -574,6 +614,7 @@ class BraveBot:
                             "lot":       lot,
                             "ticket":    getattr(result, "order", 0),
                             "strategy":  strategy_name,
+                            "session":   self._get_current_session(),
                         })
                     except Exception as e:
                         logging.error(f"[{symbol}] Failed to log trade: {e}")
@@ -602,6 +643,17 @@ class BraveBot:
         orders    = mt5.orders_get(symbol=symbol)    if symbol else mt5.orders_get()
 
         return (len(positions) if positions else 0) + (len(orders) if orders else 0)
+
+    def _get_current_session(self) -> str:
+        """UTC session windows mapped for performance attribution."""
+        now_utc = datetime.now(timezone.utc).time()
+        
+        if self.LONDON_OPEN <= now_utc < self.LONDON_CLOSE:
+            return "LONDON"
+        if self.NY_OPEN <= now_utc < self.NY_CLOSE:
+            return "NEW_YORK"
+        
+        return "OTHER"
 
     def _get_config(self) -> dict:
         if self.firebase_enabled:

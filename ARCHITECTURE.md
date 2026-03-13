@@ -123,6 +123,8 @@ users/
       open_markets          array
       markets_analyzed      array
       trading_active        bool
+      paused_reason         string  "DAILY_LOSS_LIMIT" | null
+      pnl_at_pause          float   e.g. -500.25
       last_started          string
       last_stopped          string
       last_updated          string
@@ -164,7 +166,7 @@ users/
     trades/                 ← Bot writes on execution
       {push_id}/
         symbol, direction, entry, sl, tp, lot
-        ticket, strategy, verified, timestamp
+        ticket, strategy, verified, session, timestamp
 ```
 
 ---
@@ -179,6 +181,7 @@ bot.run()
         ├── _get_config() from Firebase
         ├── _check_signals(config)
         │     ├── _load_active_strategy()   ← reads brave_config, hot-swaps if changed
+        │     ├── Daily Loss Limiter        ← pauses bot if loss exceeds 5% of daily equity
         │     ├── _select_pairs() every 1hr ← scores by spread + volatility
         │     ├── _open_markets()           ← checks MT5 status
         │     └── for each open pair:

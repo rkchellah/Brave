@@ -11,6 +11,7 @@ Automated trading bot for MetaTrader 5 focused on the **Flow** trend continuatio
 - ✅ Auto-Trading Execution
 - ✅ Dynamic 1% Risk Management
 - ✅ News Filtering (ForexFactory integration)
+- ✅ Daily Loss Limiter (5% session equity cap)
 - ✅ Daily Log Rotation (7-day history)
 - ✅ Comprehensive Logging
 - ✅ Thunder Strategy (EMA Stack Scalper)
@@ -100,6 +101,7 @@ Brave/
 - [x] Phase 2: Live Trading & Stability
     - [x] **Auto-Execution**: 1% risk-based lot sizing
     - [x] **News Filter**: FF Calendar integration
+    - [x] **Daily Loss Limiter**: 5% session equity protection
     - [x] **Stability**: Log rotation + SSE reconnect handling
     - [x] **Thunder Strategy**: EMA Stack Scalper (+273% backtest)
 - [ ] Phase 3: Mobile app Control Panel
