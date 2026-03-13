@@ -11,7 +11,7 @@ import MetaTrader5 as mt5
 import firebase_admin
 from firebase_admin import credentials, db
 import numpy as np
-import time
+import time as time_module
 import logging
 import logging.handlers
 import sys
@@ -449,9 +449,10 @@ class BraveBot:
 
         if (
             self.last_pair_refresh is None
-            or (now - self.last_pair_refresh).total_seconds() >= self.PAIR_REFRESH_INTERVAL
+            or (datetime.now() - self.last_pair_refresh).total_seconds() >= self.PAIR_REFRESH_INTERVAL
         ):
             # Recalculate best pairs periodically to adapt to changing volatility/spreads
+            now = datetime.now()
             self.active_pairs      = self._select_pairs(max_pairs=3)
             self.last_pair_refresh = now
 
@@ -601,6 +602,7 @@ class BraveBot:
 
             if result and result.retcode == mt5.TRADE_RETCODE_DONE:
                 logging.info(f"[{symbol}] Order placed — ticket: {getattr(result, 'order', 0)}")
+                self._log_trade_to_csv(symbol, signal, lot, result)
                 if self.firebase_enabled:
                     # Log execution details for remote monitoring and later CSV analysis
                     try:
@@ -628,6 +630,47 @@ class BraveBot:
             logging.error(f"[{symbol}] Execution error: {e}")
             traceback.print_exc()
             return None
+
+    def _log_trade_to_csv(self, symbol: str, signal: dict, lot: float, result) -> None:
+        import csv
+        from pathlib import Path
+
+        os.makedirs("logs/trades", exist_ok=True)
+        today    = datetime.now().strftime("%Y-%m-%d")
+        csv_path = f"logs/trades/trades_{today}.csv"
+
+        headers = [
+            "timestamp", "symbol", "strategy", "direction", "order_type",
+            "entry_price", "sl", "tp", "lot", "risk_reward",
+            "ticket", "session", "account_balance", "account_equity"
+        ]
+
+        account = mt5.account_info()
+        row = {
+            "timestamp":       datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "symbol":          symbol,
+            "strategy":        signal.get("strategy_name", self.active_strategy_name),
+            "direction":       signal["direction"],
+            "order_type":      signal.get("order_type", "MARKET"),
+            "entry_price":     signal["entry_price"],
+            "sl":              signal["suggested_sl"],
+            "tp":              signal["suggested_tp"],
+            "lot":             lot,
+            "risk_reward":     signal["risk_reward_ratio"],
+            "ticket":          getattr(result, "order", 0),
+            "session":         self._get_current_session(),
+            "account_balance": account.balance if account else None,
+            "account_equity":  account.equity  if account else None,
+        }
+
+        file_exists = Path(csv_path).exists()
+        with open(csv_path, "a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=headers)
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow(row)
+
+        logging.info(f"[{symbol}] Trade logged → {csv_path}")
 
     # ═══════════════════════════════════════════════════════════════
     # UTILITIES
@@ -706,7 +749,7 @@ class BraveBot:
             while True:
                 if not self.is_running:
                     logging.info("Bot paused — waiting for start command...")
-                    time.sleep(self.CHECK_INTERVAL)
+                    time_module.sleep(self.CHECK_INTERVAL)
                     continue
 
                 elapsed = (datetime.now() - self.last_health_check).total_seconds()
@@ -717,7 +760,7 @@ class BraveBot:
                 self._check_signals(config)
 
                 logging.info(f"Sleeping {self.CHECK_INTERVAL}s...\n")
-                time.sleep(self.CHECK_INTERVAL)
+                time_module.sleep(self.CHECK_INTERVAL)
 
         except KeyboardInterrupt:
             logging.info("Bot stopped (Ctrl+C)")

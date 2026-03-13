@@ -48,11 +48,7 @@ class Thunder:
     MIN_RR             = 2.0    # Minimum Risk:Reward to take the trade
     MIN_ATR_PIPS       = 3.0    # Skip if market is dead (ATR < 3 pips)
 
-    # ─── Session windows (UTC) ─────────────────────────────────────
-    LONDON_OPEN  = time(8, 0)
-    LONDON_CLOSE = time(11, 0)
-    NY_OPEN      = time(13, 0)
-    NY_CLOSE     = time(16, 0)
+    # Session filtering is handled at the bot level via _get_current_session()
 
     def __init__(self, config: dict):
         """
@@ -221,11 +217,6 @@ class Thunder:
     # UTILITIES
     # ═══════════════════════════════════════════════════════════════
 
-    def _is_active_session(self) -> bool:
-        """True if current UTC time is within London or NY session"""
-        now = datetime.now(timezone.utc).time()
-        return (self.LONDON_OPEN <= now < self.LONDON_CLOSE or
-                self.NY_OPEN     <= now < self.NY_CLOSE)
 
     def _get_candles(self, symbol: str, timeframe: int, count: int,
                      provided_rates: dict | None) -> list[dict] | None:
