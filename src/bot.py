@@ -583,6 +583,11 @@ class BraveBot:
 
             price = entry if sig_type == "STOP" else (tick.ask if direction == "BUY" else tick.bid)
 
+            # Phase 2 fix: Round to symbol digits so XAUUSD doesn't drop SL/TP
+            price = round(price, info.digits)
+            sl    = round(sl, info.digits)
+            tp    = round(tp, info.digits)
+
             request = {
                 "action":       mt5.TRADE_ACTION_PENDING if sig_type == "STOP" else mt5.TRADE_ACTION_DEAL,
                 "symbol":       symbol,

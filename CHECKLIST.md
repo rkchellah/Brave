@@ -34,6 +34,7 @@
       high-impact ForexFactory events per symbol's currencies
 - [x] Firebase SSE timeout downgraded to DEBUG — no longer spams logs
 - [x] **Daily Loss Limiter (Kill Switch) added** — pauses bot if daily loss exceeds 5%
+- [x] **XAUUSD SL/TP dropped bug fixed** — `bot.py` now precisely rounds Entry, SL, and TP to `info.digits` for each symbol to prevent MT5 from silently stripping invalid decimals on metals/indices.
 
 ### Known Remaining Issues
 - [ ] US30/NAS100 returning no data from broker (broker may not support indices on demo)
