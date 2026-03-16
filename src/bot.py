@@ -588,20 +588,28 @@ class BraveBot:
             sl    = round(sl, info.digits)
             tp    = round(tp, info.digits)
 
+            xauusd_manual = symbol == "XAUUSD"
+
             request = {
                 "action":       mt5.TRADE_ACTION_PENDING if sig_type == "STOP" else mt5.TRADE_ACTION_DEAL,
                 "symbol":       symbol,
                 "volume":       round(lot, 2),
                 "type":         order_type,
                 "price":        price,
-                "sl":           sl,
-                "tp":           tp,
+                "sl":           0.0 if xauusd_manual else sl,
+                "tp":           0.0 if xauusd_manual else tp,
                 "deviation":    20,
                 "magic":        300001,
                 "comment":      f"brave_{strategy_name[:10]}",
                 "type_time":    mt5.ORDER_TIME_GTC,
                 "type_filling": mt5.ORDER_FILLING_IOC if sig_type == "MARKET" else mt5.ORDER_FILLING_RETURN,
             }
+
+            if xauusd_manual:
+                logging.warning(
+                    f"[{symbol}] set manually in MT5 -> "
+                    f"Direction: {direction} | Entry: {price} | SL: {sl} | TP: {tp}"
+                )
 
             result = mt5.order_send(request)
 

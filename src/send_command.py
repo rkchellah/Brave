@@ -1,8 +1,12 @@
 import firebase_admin
 from firebase_admin import credentials, db
-from config import FIREBASE_DATABASE_URL, USER_ID
 from datetime import datetime
 import sys
+import os
+
+# Add parent directory to path so it can find config.py
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from config import FIREBASE_DATABASE_URL, USER_ID
 
 # Initialize Firebase with proper error handling
 def init_firebase():
