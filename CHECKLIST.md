@@ -70,11 +70,11 @@ npx expo start --clear
 App loaded on device showing: "Open up App.js to start working on your app!"
 Lesson for future devs: Match the project SDK to the device SDK (52 is currently the safest bet for stability).
 ### Screens To Build
-- [ ] Dashboard — balance, equity, P&L, bot status, start/stop button
-- [ ] Signals — pending signals with Confirm/Reject (Human-in-the-Loop)
-- [ ] AI Insights — sentiment scores for EURUSD, GBPUSD, XAUUSD
-- [ ] Alerts — trade history feed
-- [ ] Settings — execution mode AUTO/MANUAL, strategy switcher
+- [x] Dashboard — balance, equity, P&L, bot status, start/stop button
+- [x] Signals — pending signals with Confirm/Reject (Human-in-the-Loop)
+- [x] AI Insights — sentiment scores for EURUSD, GBPUSD, XAUUSD
+- [x] Alerts — trade history feed
+- [x] Settings — execution mode AUTO/MANUAL, strategy switcher
 
 ### Human-in-the-Loop (HITL) Architecture
 - [x] Execution mode designed — AUTO and MANUAL
@@ -83,8 +83,8 @@ Lesson for future devs: Match the project SDK to the device SDK (52 is currently
 - [x] `bot.py` — execution mode gate added to `execute_signal()`
 - [x] `bot.py` — MANUAL mode pushes pending signal to Firebase and waits
 - [x] `bot.py` — 3-minute expiry logic for MANUAL signals
-- [ ] Mobile app — AUTO/MANUAL toggle on Dashboard
-- [ ] Mobile app — Signals screen with Confirm/Reject buttons
+- [x] Mobile app — AUTO/MANUAL toggle on Dashboard
+- [x] Mobile app — Signals screen with Confirm/Reject buttons
 - [ ] Push notifications via Firebase Cloud Messaging (FCM)
 
 ### Mobile App Setup Challenges Log
