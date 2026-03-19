@@ -36,6 +36,7 @@ Brave/
 │   ├── thunder.py            # Thunder strategy — EMA Stack Scalper
 │   ├── flow.py               # Flow strategy — Trend Continuation
 │   ├── news_filter.py        # News filtering logic
+│   ├── sentiment_service.py  # AI Sentiment Analysis (GPT-4 + Grok)
 │   ├── manage_config.py      # CLI utility: update Firebase config
 │   ├── send_command.py       # CLI utility: start/stop bot
 │   └── setup_firebase.py     # One-time Firebase setup script
@@ -67,6 +68,11 @@ Brave/
 | Remote control | Firebase command queue |
 | Secrets | `config.py` + `serviceAccountKey.json` (never committed) |
 | Deployment | Local machine or VPS running MT5 terminal |
+| Mobile App | React Native + Expo SDK 52 |
+| Mobile Database | @react-native-firebase/database |
+| Mobile Navigation | @react-navigation/bottom-tabs |
+| Push Notifications | expo-notifications + Firebase Cloud Messaging |
+| Mobile Dev Tool | Expo Go (Android) |
 
 ---
 
@@ -167,6 +173,17 @@ users/
       {push_id}/
         symbol, direction, entry, sl, tp, lot
         ticket, strategy, verified, session, timestamp
+
+    sentiment/              ← SentimentService writes this
+      {symbol}/
+        direction_bias      string  "BULLISH" | "BEARISH" | "NEUTRAL"
+        score               float   -1.0 to 1.0
+        confidence          string  "HIGH" | "MEDIUM" | "LOW"
+        gpt4_summary        string  News summary
+        grok_summary        string  X/Social summary
+        risk_advisory       string  Plain-English warning
+        trade_alignment     string  "ALIGNED" | "OPPOSED"
+        updated_at          string  ISO timestamp
 ```
 
 ---
@@ -365,7 +382,7 @@ POINT_SIZES = {
 
 ## What Does NOT Exist Yet
 
-- Mobile app (Phase 3) — Firebase structure is ready, app is not built
+- Mobile app screens (Phase 3 in progress) — project scaffolded, screens being built
 - Ringer strategy — not started
 - Second scalping strategy for Brave bundle — pending Thunder backtest results
 - Auto-restart on crash — needs systemd or equivalent for production VPS

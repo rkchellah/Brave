@@ -33,8 +33,11 @@
 - [x] **News filter added** — `news_filter.py` pauses trading ±30 min around
       high-impact ForexFactory events per symbol's currencies
 - [x] Firebase SSE timeout downgraded to DEBUG — no longer spams logs
+- [x] **Firebase init bug fixed** — `firebase_enabled` flag now set immediately after connection to ensure initial status push isn't skipped.
+- [x] **MT5 Terminal check added** — bot now detects if "Algo Trading" button is OFF in MT5 and logs a critical error.
 - [x] **Daily Loss Limiter (Kill Switch) added** — pauses bot if daily loss exceeds 5%
 - [x] **XAUUSD SL/TP dropped bug fixed** — `bot.py` now precisely rounds Entry, SL, and TP to `info.digits` for each symbol to prevent MT5 from silently stripping invalid decimals on metals/indices.
+- [x] **AI Sentiment Service added** — `sentiment_service.py` uses GPT-4 and Grok-3 to analysis market sentiment and push to Firebase.
 
 ### Known Remaining Issues
 - [ ] US30/NAS100 returning no data from broker (broker may not support indices on demo)
@@ -42,14 +45,71 @@
 
 ---
 
-## Phase 3 — Mobile App ❌ NOT STARTED
-- [ ] Choose stack: React Native / Flutter / PWA
-- [ ] Real-time bot status display (balance, equity, open positions)
-- [ ] Start / Stop controls → writes to Firebase `commands/action`
-- [ ] Strategy switcher → writes to Firebase `brave_config/active_strategy`
-- [ ] Alerts feed (reads `users/{id}/alerts`)
-- [ ] Trade history view (reads `users/{id}/trades`)
-- [ ] News event display (upcoming high-impact events per active pairs)
+## Phase 3 — Mobile App 🔄 IN PROGRESS
+
+### Setup Complete
+- [x] Stack chosen: React Native with Expo SDK 52
+- [x] Expo CLI + EAS CLI installed globally
+- [x] `brave-app` project scaffolded with `create-expo-app`
+- [x] Firebase packages installed (`@react-native-firebase/app`, `@react-native-firebase/database`)
+- [x] Navigation installed (`@react-navigation/native`, `@react-navigation/bottom-tabs`)
+- [x] `expo-notifications` installed
+- [x] App running live on physical Android device via Expo Go (SDK 52)
+
+### ⚠️ Setup Challenge — Expo SDK Version Mismatch
+**Problem:** After scaffolding with `create-expo-app`, scanning the QR code on the
+physical device returned: *"Project is incompatible with this version of Expo Go."*
+
+**Root cause:** Initial tests with SDK 54/55 (latest) revealed that the user's Expo Go version was older.
+**What fixed it:** Downgraded the project to **SDK 52** for maximum compatibility:
+```bash
+cd brave-app
+npm install --legacy-peer-deps
+npx expo start --clear
+```
+App loaded on device showing: "Open up App.js to start working on your app!"
+Lesson for future devs: Match the project SDK to the device SDK (52 is currently the safest bet for stability).
+### Screens To Build
+- [ ] Dashboard — balance, equity, P&L, bot status, start/stop button
+- [ ] Signals — pending signals with Confirm/Reject (Human-in-the-Loop)
+- [ ] AI Insights — sentiment scores for EURUSD, GBPUSD, XAUUSD
+- [ ] Alerts — trade history feed
+- [ ] Settings — execution mode AUTO/MANUAL, strategy switcher
+
+### Human-in-the-Loop (HITL) Architecture
+- [x] Execution mode designed — AUTO and MANUAL
+- [x] Firebase schema extended — `brave_config/execution_mode`
+- [x] `config.py` updated — `EXECUTION_MODE = "AUTO"`, `SIGNAL_EXPIRY_SECONDS = 180`
+- [x] `bot.py` — execution mode gate added to `execute_signal()`
+- [x] `bot.py` — MANUAL mode pushes pending signal to Firebase and waits
+- [x] `bot.py` — 3-minute expiry logic for MANUAL signals
+- [ ] Mobile app — AUTO/MANUAL toggle on Dashboard
+- [ ] Mobile app — Signals screen with Confirm/Reject buttons
+- [ ] Push notifications via Firebase Cloud Messaging (FCM)
+
+### Mobile App Setup Challenges Log
+- [x] **SDK mismatch** — `create-expo-app@latest` scaffolds SDK 55, phone has SDK 54.
+      Fix: manually replace `package.json` with all versions locked to SDK 54
+      before running `npm install --legacy-peer-deps`
+- [x] **PlatformConstants red screen** — caused by `react-native-screens` versions
+      above 3.34.0 using TurboModules not supported in Expo Go SDK 54.
+      Fix: lock `react-native-screens` to exactly `3.34.0` in `package.json`
+- [x] **Windows path length error** — `node_modules` nesting exceeds Windows 260-char
+      limit. Fix: enable long paths via registry
+      `HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem LongPathsEnabled = 1`
+- [x] **PowerShell multiline paste** — commands merge into one line e.g.
+      `cd brave-appnpm install`. Fix: always paste one command per line in PowerShell
+- [x] **VPN interference** — Proton VPN on phone blocks local network connection to
+      Metro bundler. Fix: disable VPN on phone before scanning QR code
+- [x] **`@react-native-firebase` incompatible with Expo Go** — native packages require
+      a compiled APK build. Fix: uninstall and use JS Firebase SDK (`firebase@10.14.1`)
+- [x] **npm version drift** — each `npm install` pulls newer incompatible versions.
+      Fix: lock all versions in `package.json` before any install
+
+### send_command.py Status
+- [ ] Verify `send_command.py start` triggers bot correctly via Firebase listener
+- [ ] Verify `send_command.py stop` halts bot correctly via Firebase listener
+- [ ] Document any observed latency between command and bot response
 
 ---
 

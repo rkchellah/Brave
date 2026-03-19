@@ -25,11 +25,13 @@ from config import (
     MT5_LOGIN, MT5_PASSWORD, MT5_SERVER,
     FIREBASE_DATABASE_URL, USER_ID,
     SYMBOLS, TIMEFRAME, LOT_SIZE, MAX_TRADES,
-    STOP_LOSS_PIPS, TAKE_PROFIT_PIPS
+    STOP_LOSS_PIPS, TAKE_PROFIT_PIPS,
+    GATE_HARD_BLOCK, EXECUTION_MODE, SIGNAL_EXPIRY_SECONDS
 )
 
 from thunder import Thunder
 from news_filter import NewsFilter
+from sentiment_gate import SentimentGate
 
 # ── Strategy registry ─────────────────────────────────────────────────
 STRATEGY_REGISTRY: dict = {
@@ -104,6 +106,9 @@ class BraveBot:
             raise RuntimeError("MT5 initialization failed")
 
         self.firebase_enabled = self._init_firebase()
+        self.sentiment_gate    = SentimentGate(user_id=USER_ID, hard_block=GATE_HARD_BLOCK)
+        # Execution mode — read from Firebase on each cycle, falls back to config default
+        self.execution_mode = EXECUTION_MODE
         if not self.firebase_enabled:
             logging.warning("Firebase disabled — running in LOCAL MODE")
 
@@ -153,8 +158,14 @@ class BraveBot:
                     "available_strategies": list(STRATEGY_REGISTRY.keys()),
                     "last_switched":        None,
                     "switched_by":          None,
+                    "execution_mode":       EXECUTION_MODE,
                 })
                 logging.info("brave_config initialized in Firebase")
+            else:
+                # Ensure execution_mode exists on existing configs
+                existing = self.brave_config_ref.get()
+                if existing and "execution_mode" not in existing:
+                    self.brave_config_ref.update({"execution_mode": EXECUTION_MODE})
 
             if self.config_ref.get() is None:
                 self.config_ref.set({
@@ -611,6 +622,39 @@ class BraveBot:
                     f"Direction: {direction} | Entry: {price} | SL: {sl} | TP: {tp}"
                 )
 
+            # ── Sentiment gate ────────────────────────────────────────
+            decision = self.sentiment_gate.evaluate(signal["symbol"], signal["direction"])
+            if decision.block:
+                logging.warning("Sentiment gate BLOCKED %s %s: %s", signal["symbol"], signal["direction"], decision.reason)
+                return
+            if decision.warn:
+                logging.warning("Sentiment gate WARNING %s %s: %s", signal["symbol"], signal["direction"], decision.reason)
+
+            # ── Execution mode gate ───────────────────────────────────
+            # Read from Firebase so mobile app can switch without restart
+            mode = self._get_execution_mode()
+            logging.info(f"[{symbol}] Execution mode: {mode}")
+
+            if mode == "MANUAL":
+                push_key = self._push_pending_signal(symbol, signal)
+                if not push_key:
+                    return
+                outcome = self._wait_for_confirmation(symbol, push_key)
+                if outcome != "CONFIRMED":
+                    # Log skipped trade to Firebase for transparency
+                    if self.firebase_enabled:
+                        try:
+                            self.alerts_ref.push({
+                                **signal,
+                                "alert_type":      "MANUAL_SKIPPED",
+                                "action_required": outcome,
+                                "sent_at":         datetime.now(timezone.utc).isoformat(),
+                            })
+                        except Exception:
+                            pass
+                    return
+                logging.info(f"[{symbol}] Proceeding to execute confirmed MANUAL signal")
+
             result = mt5.order_send(request)
 
             if result and result.retcode == mt5.TRADE_RETCODE_DONE:
@@ -727,6 +771,83 @@ class BraveBot:
             "stop_loss_pips":   STOP_LOSS_PIPS,
             "take_profit_pips": TAKE_PROFIT_PIPS,
         }
+
+    def _get_execution_mode(self) -> str:
+        """
+        Read execution_mode from Firebase brave_config.
+        Falls back to config.py default if Firebase unavailable.
+        Allows mobile app to switch AUTO/MANUAL without restarting bot.
+        """
+        if self.firebase_enabled:
+            try:
+                brave_config = self.brave_config_ref.get()
+                if brave_config and "execution_mode" in brave_config:
+                    mode = brave_config["execution_mode"].upper()
+                    if mode in ("AUTO", "MANUAL"):
+                        return mode
+            except Exception as e:
+                logging.debug(f"Could not read execution_mode: {e}")
+        return self.execution_mode
+
+    def _push_pending_signal(self, symbol: str, signal: dict) -> str | None:
+        """
+        Push a signal to Firebase as PENDING for MANUAL mode confirmation.
+        Returns the Firebase push key so we can listen for the response.
+        Mobile app reads this and shows Confirm/Reject buttons.
+        """
+        if not self.firebase_enabled:
+            logging.warning(f"[{symbol}] MANUAL mode but Firebase disabled — skipping signal")
+            return None
+        try:
+            pending_ref = db.reference(f"users/{USER_ID}/pending_signals")
+            entry = {
+                **signal,
+                "status":     "PENDING",
+                "expires_at": (
+                    datetime.now(timezone.utc).timestamp() + SIGNAL_EXPIRY_SECONDS
+                ),
+                "pushed_at":  datetime.now(timezone.utc).isoformat(),
+            }
+            result = pending_ref.push(entry)
+            logging.info(f"[{symbol}] MANUAL signal pushed — key: {result.key} | expires in {SIGNAL_EXPIRY_SECONDS}s")
+            return result.key
+        except Exception as e:
+            logging.error(f"[{symbol}] Failed to push pending signal: {e}")
+            return None
+
+    def _wait_for_confirmation(self, symbol: str, push_key: str) -> str:
+        """
+        Poll Firebase for human confirmation of a MANUAL signal.
+        Returns "CONFIRMED", "REJECTED", or "EXPIRED".
+        Polls every 5 seconds until SIGNAL_EXPIRY_SECONDS is reached.
+        """
+        import time as _time
+        deadline    = datetime.now(timezone.utc).timestamp() + SIGNAL_EXPIRY_SECONDS
+        pending_ref = db.reference(f"users/{USER_ID}/pending_signals/{push_key}")
+
+        logging.info(f"[{symbol}] Waiting for confirmation ({SIGNAL_EXPIRY_SECONDS}s timeout)...")
+
+        while datetime.now(timezone.utc).timestamp() < deadline:
+            try:
+                data = pending_ref.get()
+                if data:
+                    status = data.get("status", "PENDING").upper()
+                    if status == "CONFIRMED":
+                        logging.info(f"[{symbol}] Signal CONFIRMED by user")
+                        return "CONFIRMED"
+                    if status == "REJECTED":
+                        logging.info(f"[{symbol}] Signal REJECTED by user")
+                        return "REJECTED"
+            except Exception as e:
+                logging.debug(f"[{symbol}] Confirmation poll error: {e}")
+            _time.sleep(5)
+
+        logging.warning(f"[{symbol}] Signal EXPIRED — no response within {SIGNAL_EXPIRY_SECONDS}s")
+        try:
+            pending_ref.update({"status": "EXPIRED"})
+        except Exception:
+            pass
+        return "EXPIRED"
 
     def _update_status(self, data: dict) -> None:
         if not self.firebase_enabled:

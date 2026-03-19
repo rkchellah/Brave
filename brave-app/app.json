@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "name": "Brave",
+    "slug": "brave-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "android": {
+      "newArchEnabled": false,
+      "package": "com.rkchellah.braveapp"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "f1268253-f59a-441c-b823-fc77a1d5d263"
+      }
+    }
+  }
+}

@@ -16,8 +16,8 @@ Automated trading bot for MetaTrader 5 focused on the **Flow** trend continuatio
 - ✅ Comprehensive Logging
 - ✅ Thunder Strategy (EMA Stack Scalper)
 - ✅ Flow Strategy (fxalexg Trend Continuation)
-- ✅ Project Rules enforced (see [RULES.md](file:///c:/Users/ECSZMLPT0067/Downloads/Back%20Up%20Files/Softs/SeoTools%20Back%20Up%20Files/bin/Projects/ME/Something%20Files/Projects/mt5-trading-bot/RULES.md))
-- ✅ Architecture Document (see [ARCHITECTURE.md](file:///c:/Users/ECSZMLPT0067/Downloads/Back%20Up%20Files/Softs/SeoTools%20Back%20Up%20Files/bin/Projects/ME/Something%20Files/Projects/mt5-trading-bot/ARCHITECTURE.md))
+- ✅ Project Rules enforced (see [RULES.md](file:///c:/Users/ECSZMLPT0067/Downloads/Back%20Up%20Files/Softs/SeoTools%20Back%20Up%20Files/bin/Projects/ME/Something%20Files/Projects/Brave/RULES.md))
+- ✅ Architecture Document (see [ARCHITECTURE.md](file:///c:/Users/ECSZMLPT0067/Downloads/Back%20Up%20Files/Softs/SeoTools%20Back%20Up%20Files/bin/Projects/ME/Something%20Files/Projects/Brave/ARCHITECTURE.md))
 
 ## Setup
 
@@ -43,7 +43,7 @@ Automated trading bot for MetaTrader 5 focused on the **Flow** trend continuatio
 
 3. **Configure the bot:**
    - Copy `config.example.py` to `config.py`
-   - Fill in your actual credentials
+   - Fill in your actual credentials (including `OPENAI_API_KEY`, `XAI_API_KEY`, `NEWSAPI_KEY`)
    - Download Firebase service account key (save as `serviceAccountKey.json`)
 
 4. **Setup Firebase:**
@@ -56,12 +56,46 @@ Automated trading bot for MetaTrader 5 focused on the **Flow** trend continuatio
    python src/bot.py
 ```
 
+6. **Run the AI Sentiment Service (Optional):**
+```bash
+   python src/sentiment_service.py
+```
+
+### Mobile App Setup (brave-app)
+Prerequisites: Node.js v17+, Expo Go (SDK 54) installed on your Android device.
+
+```bash
+cd brave-app
+npm install
+npx expo install --fix
+npx expo start --clear
+```
+Scan the QR code with Expo Go on your phone.
+Note: always run commands one line at a time in PowerShell.
+
 ## Usage
 
 ### Start/Stop Bot
 ```bash
 python src/send_command.py start
 python src/send_command.py stop
+```
+Commands are sent to Firebase `commands/action`. The bot listener responds within
+one 60-second loop cycle. Verify the bot is running by checking
+`bot_status/is_running` in Firebase Console.
+
+### Execution Modes
+The bot supports two execution modes, toggled from the mobile app or Firebase:
+
+- **AUTO** (default) — Bot executes signals immediately, sends push notification
+  as a receipt. Best when you are not actively watching the markets.
+- **MANUAL** — Bot pauses at signal, sends push notification with Confirm/Reject.
+  Signal expires in 3 minutes if no response — logged as `EXPIRED`.
+  Best when you are actively watching and want final approval on each trade.
+
+Set default in `config.py`:
+```python
+EXECUTION_MODE = "AUTO"   # "AUTO" | "MANUAL"
 ```
 
 ### Monitor
@@ -77,6 +111,7 @@ Brave/
 │   ├── thunder.py         # Thunder strategy
 │   ├── flow.py            # Flow strategy
 │   ├── news_filter.py     # High-impact news filter
+│   ├── sentiment_service.py # AI Sentiment Analysis
 │   ├── manage_config.py   # Config manager
 │   ├── send_command.py    # Command utility
 │   └── setup_firebase.py  # Firebase setup script
@@ -104,7 +139,17 @@ Brave/
     - [x] **Daily Loss Limiter**: 5% session equity protection
     - [x] **Stability**: Log rotation + SSE reconnect handling
     - [x] **Thunder Strategy**: EMA Stack Scalper (+273% backtest)
-- [ ] Phase 3: Mobile app Control Panel
+- [x] Phase 3: Mobile App — In Progress
+    - [x] **Stack**: React Native + Expo SDK 52 (Safest for compatibility)
+    - [x] **Device**: Running live on Android via Expo Go
+    - [x] **Firebase**: `@react-native-firebase` installed and wired
+    - [x] **Navigation**: Bottom tab navigation installed
+    - [x] **Notifications**: `expo-notifications` installed
+    - [ ] Dashboard screen
+    - [ ] Signals screen (Human-in-the-Loop confirm/reject)
+    - [ ] AI Insights screen
+    - [ ] Alerts screen
+    - [ ] Settings screen
 - [ ] Phase 4: Production Hardening
 
 ## Flow Strategy
