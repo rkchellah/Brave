@@ -418,46 +418,115 @@ function AlertsScreen() {
 
 function SettingsScreen() {
   const [braveConfig, setBraveConfig] = useState(null);
-  const [health, setHealth] = useState(null);
+  const [health,      setHealth]      = useState(null);
 
   useEffect(() => {
     const u1 = onValue(ref(db, `users/${USER_ID}/brave_config`), s => setBraveConfig(s.val()));
-    const u2 = onValue(ref(db, `users/${USER_ID}/health`), s => setHealth(s.val()));
+    const u2 = onValue(ref(db, `users/${USER_ID}/health`),       s => setHealth(s.val()));
     return () => { u1(); u2(); };
   }, []);
 
-  const switchStrategy = async (strategy) => {
-    await update(ref(db, `users/${USER_ID}/brave_config`), {
-      active_strategy: strategy,
-      last_switched: new Date().toISOString(),
-      switched_by: 'mobile',
+  const toggleStrategy = async (name, currentlyEnabled) => {
+    await update(ref(db, `users/${USER_ID}/brave_config/strategy_config/${name}`), {
+      enabled: !currentlyEnabled,
     });
   };
 
-  const strategies = braveConfig?.available_strategies ?? ['thunder'];
-  const active = braveConfig?.active_strategy ?? 'thunder';
-  const hc = health?.status === 'HEALTHY' ? C.success : health?.status === 'DEGRADED' ? C.warning : C.tMuted;
+  const updateMaxTrades = async (name, value) => {
+    const num = parseInt(value);
+    if (isNaN(num) || num < 1 || num > 10) return;
+    await update(ref(db, `users/${USER_ID}/brave_config/strategy_config/${name}`), {
+      max_trades: num,
+    });
+  };
+
+  const strategyConfig = braveConfig?.strategy_config ?? {
+    thunder: { enabled: true,  max_trades: 2 },
+    flow:    { enabled: false, max_trades: 2 },
+    frost:   { enabled: false, max_trades: 2 },
+  };
+
+  const STRATEGY_INFO = {
+    thunder: { label: 'Thunder', desc: 'Breakout scalper · London + NY · EURUSD GBPUSD XAUUSD' },
+    flow:    { label: 'Flow',    desc: 'Structure scalper · All sessions · EURUSD GBPUSD' },
+    frost:   { label: 'Frost',   desc: 'Mean reversion · Asian session · GBPUSD USDCAD EURCHF' },
+  };
+
+  const hc = health?.status === 'HEALTHY' ? C.success
+    : health?.status === 'DEGRADED' ? C.warning : C.tMuted;
+
+  const enabledCount = Object.values(strategyConfig).filter(s => s.enabled).length;
 
   return (
     <ScrollView style={s.screen} contentContainerStyle={s.scroll}>
       <Text style={s.screenTitle}>Settings</Text>
-      <Text style={s.sectionTitle}>Strategy</Text>
-      {strategies.map(strat => (
-        <TouchableOpacity
-          key={strat}
-          style={[s.card, active === strat ? { borderColor: C.primary, borderWidth: 1 } : {}]}
-          onPress={() => switchStrategy(strat)}
-        >
-          <View style={s.cardRow}>
-            <Text style={[s.valSec, { textTransform: 'capitalize' }]}>{strat}</Text>
-            {active === strat ? (
-              <View style={[s.pill, { borderColor: C.primary, backgroundColor: C.primary + '22' }]}>
-                <Text style={[s.pillTxt, { color: C.primary }]}>ACTIVE</Text>
+
+      <Text style={s.sectionTitle}>Strategies</Text>
+      <Text style={[s.lbl, { marginBottom: 12 }]}>
+        {enabledCount === 0 ? 'No strategies enabled — bot will not trade' :
+         enabledCount === 1 ? '1 strategy active' :
+         `${enabledCount} strategies running simultaneously`}
+      </Text>
+
+      {Object.entries(STRATEGY_INFO).map(([name, info]) => {
+        const cfg     = strategyConfig[name] ?? { enabled: false, max_trades: 2 };
+        const enabled = cfg.enabled === true;
+        const color   = enabled ? C.success : C.tMuted;
+
+        return (
+          <View key={name} style={[s.card, enabled && { borderColor: color, borderWidth: 1 }]}>
+            <View style={s.cardRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={[s.val, { fontSize: 16 }]}>{info.label}</Text>
+                <Text style={[s.lbl, { marginTop: 4, textTransform: 'none', letterSpacing: 0 }]}>
+                  {info.desc}
+                </Text>
               </View>
-            ) : null}
+              <TouchableOpacity
+                style={[s.btn, {
+                  paddingVertical: 8,
+                  paddingHorizontal: 16,
+                  flex: 0,
+                  borderColor: color,
+                  backgroundColor: color + '22',
+                }]}
+                onPress={() => toggleStrategy(name, enabled)}
+              >
+                <Text style={[s.btnTxt, { color, fontSize: 12 }]}>
+                  {enabled ? 'ON' : 'OFF'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {enabled && (
+              <View style={[s.cardRow, { marginTop: 12 }]}>
+                <Text style={s.lbl}>Max trades</Text>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  {[1, 2, 3].map(n => (
+                    <TouchableOpacity
+                      key={n}
+                      style={[s.btn, {
+                        paddingVertical: 6,
+                        paddingHorizontal: 14,
+                        flex: 0,
+                        borderColor: cfg.max_trades === n ? C.primary : C.border,
+                        backgroundColor: cfg.max_trades === n ? C.primary + '22' : 'transparent',
+                      }]}
+                      onPress={() => updateMaxTrades(name, n)}
+                    >
+                      <Text style={[s.btnTxt, {
+                        fontSize: 13,
+                        color: cfg.max_trades === n ? C.primary : C.tMuted,
+                      }]}>{n}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            )}
           </View>
-        </TouchableOpacity>
-      ))}
+        );
+      })}
+
       <Text style={[s.sectionTitle, { marginTop: 20 }]}>System health</Text>
       <View style={s.card}>
         <View style={s.cardRow}>
@@ -478,7 +547,10 @@ function SettingsScreen() {
         </View>
         <Text style={[s.lbl, { marginTop: 8 }]}>Updated {fmtTime(health?.timestamp)}</Text>
       </View>
-      <Text style={[s.footer, { marginTop: 16 }]}>Brave v2.0 · Strategy changes apply within 60s</Text>
+
+      <Text style={[s.footer, { marginTop: 16 }]}>
+        Brave v2.0 · Strategy changes apply within 60s
+      </Text>
     </ScrollView>
   );
 }
