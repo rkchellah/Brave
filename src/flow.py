@@ -52,18 +52,18 @@ class Flow:
     M15_LOOKBACK = 30     # M15 candles for entry signal
 
     # ─── AOI settings ──────────────────────────────────────────────
-    AOI_ZONE_BAND_PIPS = 15    # Zone clustering band (tighter for scalping)
-    MIN_AOI_TOUCHES    = 2     # Reduced from 3 — faster signals
+    AOI_ZONE_BAND_PIPS = 12    # Zone clustering band (tighter for scalping)
+    MIN_AOI_TOUCHES    = 3     # Reduced from 3 — faster signals
 
     # ─── Entry settings ────────────────────────────────────────────
-    PRICE_AT_AOI_PIPS  = 8     # Price must be within 8 pips of AOI
-    MIN_SWEEP_PIPS     = 0.5   # Minimum sweep to avoid noise
-    MAX_SWEEP_PIPS     = 12.0  # Maximum sweep to avoid breakouts
+    PRICE_AT_AOI_PIPS  = 6     # Price must be within 8 pips of AOI
+    MIN_SWEEP_PIPS     = 1.0   # Minimum sweep to avoid noise
+    MAX_SWEEP_PIPS     = 10.0  # Maximum sweep to avoid breakouts
 
     # ─── Exit settings ─────────────────────────────────────────────
     ATR_PERIOD   = 14
-    ATR_SL_MULT  = 1.5    # SL = 1.5 × ATR on M15
-    MIN_RR       = 1.5    # Reduced from 2.0 for scalping
+    ATR_SL_MULT  = 1.2     # SL = 1.2 × ATR on M15
+    MIN_RR       = 2.0    # Reduced from 2.0 for scalping
 
     # ─── Session windows (UTC) ─────────────────────────────────────
     SESSIONS = [
@@ -337,6 +337,11 @@ class Flow:
 
                 if swept and reclaimed and bullish:
                     if self.MIN_SWEEP_PIPS <= sweep_pips <= self.MAX_SWEEP_PIPS:
+                        # Confirm body is strong — not a doji
+                        body = abs(candle["close"] - candle["open"])
+                        candle_range = candle["high"] - candle["low"]
+                        if candle_range > 0 and body / candle_range < 0.4:
+                            continue  # weak body — skip
                         return {
                             "type":            "SWEEP_RECLAIM",
                             "direction":       "BUY",
@@ -352,6 +357,11 @@ class Flow:
 
                 if swept and reclaimed and bearish:
                     if self.MIN_SWEEP_PIPS <= sweep_pips <= self.MAX_SWEEP_PIPS:
+                        # Confirm body is strong — not a doji
+                        body = abs(candle["close"] - candle["open"])
+                        candle_range = candle["high"] - candle["low"]
+                        if candle_range > 0 and body / candle_range < 0.4:
+                            continue  # weak body — skip
                         return {
                             "type":             "SWEEP_RECLAIM",
                             "direction":        "SELL",

@@ -28,7 +28,7 @@ from flow import Flow
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 
-SYMBOLS      = ["EURUSD", "GBPUSD", "XAUUSD"]
+SYMBOLS      = ["EURUSD", "GBPUSD"]
 CANDLES_M15  = 50_000
 CANDLES_H1   = 15_000
 RISK_PCT     = 0.01

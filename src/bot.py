@@ -29,7 +29,7 @@ from config import (
     GATE_HARD_BLOCK, EXECUTION_MODE, SIGNAL_EXPIRY_SECONDS
 )
 
-from thunder import Thunder
+from thunder import thunder
 from flow import flow as Flow
 from frost import Frost
 from news_filter import NewsFilter
@@ -37,7 +37,7 @@ from sentiment_gate import SentimentGate
 
 # ── Strategy registry ─────────────────────────────────────────────────
 STRATEGY_REGISTRY: dict = {
-    "thunder": Thunder,
+    "thunder": thunder,
     "flow":    Flow,
     "frost":   Frost,
 }
@@ -163,13 +163,26 @@ class BraveBot:
                     "last_switched":        None,
                     "switched_by":          None,
                     "execution_mode":       EXECUTION_MODE,
+                    "strategy_config": {
+                        "thunder": {"enabled": True,  "max_trades": 2},
+                        "flow":    {"enabled": False, "max_trades": 2},
+                        "frost":   {"enabled": False, "max_trades": 2},
+                    },
                 })
                 logging.info("brave_config initialized in Firebase")
             else:
-                # Ensure execution_mode exists on existing configs
                 existing = self.brave_config_ref.get()
-                if existing and "execution_mode" not in existing:
-                    self.brave_config_ref.update({"execution_mode": EXECUTION_MODE})
+                if existing:
+                    if "execution_mode" not in existing:
+                        self.brave_config_ref.update({"execution_mode": EXECUTION_MODE})
+                    if "strategy_config" not in existing:
+                        self.brave_config_ref.update({
+                            "strategy_config": {
+                                "thunder": {"enabled": True,  "max_trades": 2},
+                                "flow":    {"enabled": False, "max_trades": 2},
+                                "frost":   {"enabled": False, "max_trades": 2},
+                            }
+                        })
 
             if self.config_ref.get() is None:
                 self.config_ref.set({
@@ -201,34 +214,61 @@ class BraveBot:
     # STRATEGY SWITCHING
     # ═══════════════════════════════════════════════════════════════
 
-    def _load_active_strategy(self, config: dict) -> bool:
-        if self.firebase_enabled:
-            try:
-                brave_config = self.brave_config_ref.get()
-                requested = brave_config.get("active_strategy", "thunder") if brave_config else "thunder"
-            except Exception as e:
-                logging.error(f"Failed to read brave_config: {e}")
-                requested = self.active_strategy_name or "thunder"
-        else:
-            requested = self.active_strategy_name or "thunder"
+    def _load_active_strategies(self, config: dict) -> list:
+        """
+        Load all enabled strategies from Firebase brave_config.
+        Supports running multiple strategies simultaneously.
+        Each strategy runs independently with its own max_trades limit.
+        Falls back to single active_strategy for backward compatibility.
+        """
+        if not self.firebase_enabled:
+            return [self._get_fallback_strategy(config)]
 
-        if requested == self.active_strategy_name and self.strategy_instance is not None:
-            return True
+        try:
+            brave_config = self.brave_config_ref.get()
+            if not brave_config:
+                return [self._get_fallback_strategy(config)]
 
-        if requested not in STRATEGY_REGISTRY:
-            logging.error(
-                f"Strategy '{requested}' not in registry. "
-                f"Available: {list(STRATEGY_REGISTRY.keys())}"
-            )
-            return False
+            # New multi-strategy format
+            strategy_config = brave_config.get("strategy_config", {})
+            if strategy_config:
+                active = []
+                for name, cfg in strategy_config.items():
+                    if cfg.get("enabled", False) and name in STRATEGY_REGISTRY:
+                        instance = STRATEGY_REGISTRY[name](config)
+                        max_trades = cfg.get("max_trades", 2)
+                        active.append({
+                            "name":       name,
+                            "instance":   instance,
+                            "max_trades": max_trades,
+                        })
+                if active:
+                    names = [s["name"] for s in active]
+                    logging.info(f"Active strategies: {names}")
+                    self._update_status({"active_strategy": ", ".join(names)})
+                    return active
 
-        old                       = self.active_strategy_name
-        self.strategy_instance    = STRATEGY_REGISTRY[requested](config)
-        self.active_strategy_name = requested
+            # Backward compatibility — single active_strategy
+            return [self._get_fallback_strategy(config)]
 
-        logging.info(f"Strategy {'loaded' if old is None else f'switched: {old} →'} {requested}")
-        self._update_status({"active_strategy": requested})
-        return True
+        except Exception as e:
+            logging.error(f"Failed to load strategies: {e}")
+            return [self._get_fallback_strategy(config)]
+
+    def _get_fallback_strategy(self, config: dict) -> dict:
+        """Fall back to single active_strategy from brave_config."""
+        try:
+            brave_config = self.brave_config_ref.get() if self.firebase_enabled else {}
+            name = brave_config.get("active_strategy", "thunder") if brave_config else "thunder"
+        except Exception:
+            name = "thunder"
+        if name not in STRATEGY_REGISTRY:
+            name = "thunder"
+        return {
+            "name":       name,
+            "instance":   STRATEGY_REGISTRY[name](config),
+            "max_trades": 2,
+        }
 
     # ═══════════════════════════════════════════════════════════════
     # COMMAND HANDLER
@@ -430,8 +470,9 @@ class BraveBot:
     def _check_signals(self, config: dict) -> None:
         logging.info(f"Checking signals... ({datetime.now().strftime('%H:%M:%S')})")
 
-        if not self._load_active_strategy(config):
-            logging.error("No valid strategy — skipping")
+        strategies = self._load_active_strategies(config)
+        if not strategies:
+            logging.error("No valid strategies — skipping")
             return
 
         # ── Daily Loss Limiter ────────────────────────────────────────
@@ -486,43 +527,46 @@ class BraveBot:
 
         for symbol in pairs_to_analyze:
             try:
-                # ── Phase 2: News filter ──────────────────────────────
                 if not self.news_filter.is_safe_to_trade(symbol):
                     logging.info(f"[{symbol}] Skipped — high-impact news window")
                     continue
 
-                # ── Phase 2: Check positions AND pending orders ───────
-                if self._count_positions(symbol) > 0:
-                    logging.info(f"[{symbol}] Position/order already exists — skipping")
-                    continue
+                for strat in strategies:
+                    strat_name     = strat["name"]
+                    strat_instance = strat["instance"]
+                    strat_max      = strat["max_trades"]
 
-                signal = self.strategy_instance.analyze(symbol)
+                    # Per-strategy position check
+                    if self._count_positions(symbol) >= strat_max:
+                        logging.info(f"[{symbol}][{strat_name}] Max trades reached ({strat_max})")
+                        continue
 
-                if signal is None:
-                    logging.info(f"[{symbol}] No signal")
-                    continue
+                    signal = strat_instance.analyze(symbol)
 
-                logging.info(
-                    f"[{symbol}] Signal: {signal['direction']} | "
-                    f"Entry: {signal['entry_price']} | "
-                    f"SL: {signal['suggested_sl']} | "
-                    f"TP: {signal['suggested_tp']} | "
-                    f"RR: {signal['risk_reward_ratio']}"
-                )
+                    if signal is None:
+                        logging.info(f"[{symbol}][{strat_name}] No signal")
+                        continue
 
-                self.execute_signal(symbol, signal, config)
+                    logging.info(
+                        f"[{symbol}][{strat_name}] Signal: {signal['direction']} | "
+                        f"Entry: {signal['entry_price']} | "
+                        f"SL: {signal['suggested_sl']} | "
+                        f"TP: {signal['suggested_tp']} | "
+                        f"RR: {signal['risk_reward_ratio']}"
+                    )
 
-                if self.firebase_enabled:
-                    try:
-                        self.alerts_ref.push({
-                            **signal,
-                            "alert_type":      f"{self.active_strategy_name.upper()}_SETUP",
-                            "action_required": "AUTO_EXECUTED",
-                            "sent_at":         datetime.now().isoformat(),
-                        })
-                        logging.info(f"[{symbol}] Alert pushed to Firebase")
-                    except Exception as e:
-                        logging.error(f"[{symbol}] Failed to push alert: {e}")
+                    self.execute_signal(symbol, signal, config)
+
+                    if self.firebase_enabled:
+                        try:
+                            self.alerts_ref.push({
+                                **signal,
+                                "alert_type":      f"{strat_name.upper()}_SETUP",
+                                "action_required": "AUTO_EXECUTED",
+                                "sent_at":         datetime.now(timezone.utc).isoformat(),
+                            })
+                        except Exception as e:
+                            logging.error(f"[{symbol}] Failed to push alert: {e}")
 
             except Exception as e:
                 logging.error(f"[{symbol}] Error during analysis: {e}")
