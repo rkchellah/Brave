@@ -30,12 +30,14 @@ from config import (
 )
 
 from thunder import Thunder
+from flow import flow as Flow
 from news_filter import NewsFilter
 from sentiment_gate import SentimentGate
 
 # ── Strategy registry ─────────────────────────────────────────────────
 STRATEGY_REGISTRY: dict = {
     "thunder": Thunder,
+    "flow":    Flow,
 }
 
 # ── Logging — rotating daily, keep 7 days ─────────────────────────────

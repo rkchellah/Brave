@@ -21,6 +21,7 @@
 - [x] `backtest_thunder.py` — full backtester with CSV cache + reporting
 - [x] Backtest validated — 273% return, 1.16 profit factor, 32.4% win rate
 - [x] Thunder wired into live `bot.py` via strategy registry
+- [x] Flow strategy wired into bot.py via strategy registry
 - [x] Live demo test confirmed — trades executing on MT5
 
 ### Phase 2 Bug Fixes + Stability
