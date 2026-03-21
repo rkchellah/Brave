@@ -5,9 +5,10 @@ config.py
 # Log files and data caches
 logs/
 data/
-*.txt
 *.log
-backtest/results/*.csv
+sentiment_log
+backtest/results/
+backtest/*.log
 
 # Python cache
 __pycache__/
@@ -31,6 +32,15 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+
+# Additional Python/Backtest/Logs
+*.pyc
+*.pyo
+
+# Mobile app
+brave-app/node_modules/
+brave-app/.expo/
+brave-app/.env
 
 # Test files (optional)
 test_*.py

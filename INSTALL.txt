@@ -1,0 +1,115 @@
+================================================================================
+                    MT5 TRADING BOT - INSTALLATION GUIDE
+================================================================================
+
+STEP 1: DOWNLOAD ALL FILES
+---------------------------
+Download ALL these files to the SAME folder:
+
+✓ config.py                      (Your configuration file)
+✓ mt5_handler.py                 (MT5 connection handler)
+✓ market_structure.py            (Market structure analyser)
+✓ fvg_detector.py               (Fair value gap detector)
+✓ supply_demand.py              (Supply/demand zone detector)
+✓ quick_test.py                 (Connection test script)
+✓ test_data_gathering_v2.py     (Main analysis script)
+✓ check_files.py                (File checker)
+✓ INSTALL.txt                   (This file)
+
+
+STEP 2: INSTALL REQUIRED PACKAGES
+----------------------------------
+Open Command Prompt (cmd) or PowerShell in your project folder and run:
+
+    pip install MetaTrader5 pandas numpy
+
+
+STEP 3: UPDATE CONFIG.PY
+-------------------------
+Edit config.py and set your MT5 credentials:
+
+    MT5_LOGIN = YOUR_LOGIN_NUMBER
+    MT5_PASSWORD = "YOUR_PASSWORD"
+    MT5_SERVER = "YOUR_BROKER_SERVER"
+
+
+STEP 4: VERIFY INSTALLATION
+----------------------------
+Run the file checker:
+
+    python check_files.py
+
+This will confirm all files are present.
+
+
+STEP 5: TEST CONNECTION
+------------------------
+Run the quick test:
+
+    python quick_test.py
+
+This verifies MT5 connection and data retrieval.
+
+
+STEP 6: RUN MARKET ANALYSIS
+----------------------------
+Run the full analysis:
+
+    python test_data_gathering_v2.py
+
+This analyzes all your symbols for trading opportunities.
+
+
+================================================================================
+                              TROUBLESHOOTING
+================================================================================
+
+ERROR: "No module named 'MetaTrader5'"
+SOLUTION: Run: pip install MetaTrader5
+
+ERROR: "No module named 'mt5_handler'"
+SOLUTION: Make sure all .py files are in the same folder
+
+ERROR: "MT5 initialization failed"
+SOLUTION: 
+  1. Make sure MT5 terminal is running
+  2. Check your login credentials in config.py
+  3. Verify your broker server name
+
+ERROR: "Failed to get bars"
+SOLUTION:
+  1. Check symbol names (they're case-sensitive)
+  2. Verify symbols are available on your broker
+  3. Try a different timeframe
+
+================================================================================
+                           TRADING WORKFLOW
+================================================================================
+
+DAILY ROUTINE:
+1. Run: python quick_test.py             (verify connection)
+2. Run: python test_data_gathering_v2.py  (find opportunities)
+3. Manually verify setups on MT5 charts
+4. Place trades manually in MT5 (for now)
+
+REMEMBER:
+- This is a DEMO account - test thoroughly!
+- Always verify signals manually before trading
+- Start with minimum lot sizes
+- Never risk more than 1-2% per trade
+
+================================================================================
+                              NEED HELP?
+================================================================================
+
+Common file locations:
+- Windows: C:\Users\YourName\Documents\mt5-trading-bot\
+- Config file should be in the same folder as the scripts
+
+Make sure:
+✓ All files are in ONE folder
+✓ MT5 terminal is installed and running
+✓ You have an active demo or live account
+✓ Python 3.7+ is installed
+
+================================================================================

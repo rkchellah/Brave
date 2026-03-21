@@ -36,6 +36,12 @@ import firebase_admin
 from firebase_admin import credentials, db
 from openai import OpenAI
 
+import os
+import sys
+
+# Ensure the root directory is in the path so we can import config.py
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 from config import (
     FIREBASE_DATABASE_URL,
     FINNHUB_API_KEY,

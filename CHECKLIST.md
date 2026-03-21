@@ -105,6 +105,9 @@ Lesson for future devs: Match the project SDK to the device SDK (52 is currently
       a compiled APK build. Fix: uninstall and use JS Firebase SDK (`firebase@10.14.1`)
 - [x] **npm version drift** — each `npm install` pulls newer incompatible versions.
       Fix: lock all versions in `package.json` before any install
+- [x] **Firebase Permission denied** — app showed $0.00 because Firebase rules
+      were set to deny public reads. Fix: set rules to `.read: true, .write: true`
+      for development. Tighten with auth rules before live account.
 
 ### send_command.py Status
 - [ ] Verify `send_command.py start` triggers bot correctly via Firebase listener
