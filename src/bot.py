@@ -31,6 +31,7 @@ from config import (
 
 from thunder import Thunder
 from flow import flow as Flow
+from frost import Frost
 from news_filter import NewsFilter
 from sentiment_gate import SentimentGate
 
@@ -38,6 +39,7 @@ from sentiment_gate import SentimentGate
 STRATEGY_REGISTRY: dict = {
     "thunder": Thunder,
     "flow":    Flow,
+    "frost":   Frost,
 }
 
 # ── Logging — rotating daily, keep 7 days ─────────────────────────────

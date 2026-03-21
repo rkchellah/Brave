@@ -23,6 +23,9 @@
 - [x] Thunder wired into live `bot.py` via strategy registry
 - [x] Flow strategy wired into bot.py via strategy registry
 - [x] Live demo test confirmed — trades executing on MT5
+- [x] Frost strategy (Asian session mean reversion) — backtest validated
+      64.5% win rate | 1.64 profit factor | +79.3% return | 5.8% max drawdown
+      Pairs: GBPUSD, USDCAD, EURCHF | 527 trades over 17 months
 
 ### Phase 2 Bug Fixes + Stability
 - [x] `firebase_enabled` AttributeError fixed — attribute now set first in `__init__`
