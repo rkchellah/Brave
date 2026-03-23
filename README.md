@@ -8,6 +8,7 @@ Automated trading bot for MetaTrader 5 focused on the **Flow** trend continuatio
 - ✅ Firebase Real-time Database
 - ✅ Remote Control (Mobile-ready)
 - ✅ Health Monitoring
+- ✅ AI-Driven Sentiment Analysis (Gemini + GPT-4 Fallback)
 - ✅ Auto-Trading Execution
 - ✅ Dynamic 1% Risk Management
 - ✅ News Filtering (ForexFactory integration)
@@ -16,8 +17,8 @@ Automated trading bot for MetaTrader 5 focused on the **Flow** trend continuatio
 - ✅ Comprehensive Logging
 - ✅ Thunder Strategy (EMA Stack Scalper)
 - ✅ Flow Strategy (fxalexg Trend Continuation)
-- ✅ Project Rules enforced (see [RULES.md](file:///c:/Users/ECSZMLPT0067/Downloads/Back%20Up%20Files/Softs/SeoTools%20Back%20Up%20Files/bin/Projects/ME/Something%20Files/Projects/Brave/RULES.md))
-- ✅ Architecture Document (see [ARCHITECTURE.md](file:///c:/Users/ECSZMLPT0067/Downloads/Back%20Up%20Files/Softs/SeoTools%20Back%20Up%20Files/bin/Projects/ME/Something%20Files/Projects/Brave/ARCHITECTURE.md))
+- ✅ Project Rules enforced (see [RULES.md](file:///c:/Users/ECSZMLPT0067/Downloads/Back%20Up Files/Softs/SeoTools Back Up Files/bin/Projects/ME/Something Files/Projects/Brave/RULES.md))
+- ✅ Architecture Document (see [ARCHITECTURE.md](file:///c:/Users/ECSZMLPT0067/Downloads/Back%20Up Files/Softs/SeoTools Back Up Files/bin/Projects/ME/Something Files/Projects/Brave/ARCHITECTURE.md))
 
 ## Setup
 
@@ -42,8 +43,7 @@ Automated trading bot for MetaTrader 5 focused on the **Flow** trend continuatio
 ```
 
 3. **Configure the bot:**
-   - Copy `config.example.py` to `config.py`
-   - Fill in your actual credentials (including `OPENAI_API_KEY`, `XAI_API_KEY`, `NEWSAPI_KEY`)
+   - Fill in your actual credentials (including `GEMINI_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`)
    - Download Firebase service account key (save as `serviceAccountKey.json`)
 
 4. **Setup Firebase:**
@@ -139,17 +139,17 @@ Brave/
     - [x] **Daily Loss Limiter**: 5% session equity protection
     - [x] **Stability**: Log rotation + SSE reconnect handling
     - [x] **Thunder Strategy**: EMA Stack Scalper (+273% backtest)
-- [x] Phase 3: Mobile App — In Progress
+- [x] Phase 3: Mobile App — Complete
     - [x] **Stack**: React Native + Expo SDK 52 (Safest for compatibility)
     - [x] **Device**: Running live on Android via Expo Go
-    - [x] **Firebase**: `@react-native-firebase` installed and wired
-    - [x] **Navigation**: Bottom tab navigation installed
-    - [x] **Notifications**: `expo-notifications` installed
-    - [x] Dashboard screen
-    - [x] Signals screen (Human-in-the-Loop confirm/reject)
-    - [x] AI Insights screen
-    - [x] Alerts screen
-    - [x] Settings screen
+    - [x] **Firebase**: Real-time sync for signals, status, and config
+    - [x] **Navigation**: Bottom tab navigation
+    - [x] **Notifications**: Detailed trade receipt alerts (Ticket # + Price)
+    - [x] Dashboard: Real-time P/L and Strategy sync
+    - [x] Signals: Interactive Human-in-the-Loop confirm/reject
+    - [x] Insights: AI Sentiment with Google Gemini & GPT-4 fallback
+    - [x] Alerts: Fast execution history with MT5 ticket details
+    - [x] Settings: Mutual-exclusive strategy selection (hot-swappable)
 - [ ] Phase 4: Production Hardening
 
 ## Flow Strategy
