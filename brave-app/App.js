@@ -156,14 +156,16 @@ function DashboardScreen() {
   const equity = status?.equity ?? 350.61;
   const profit = status?.profit ?? -10.40;
   const positions = status?.open_positions ?? 1;
+  const pnlPct = status?.session_pnl_pct ?? -20.6;
+  const pnlPctDisp = Math.abs(pnlPct).toFixed(1);
+  const pnlPctArrow = pnlPct >= 0 ? '↑' : '↓';
+  const pnlTodayStr = (status?.session_pnl ?? -9.00).toFixed(2);
+  const badgeColor = pnlPct >= 0 ? '#1E3829' : '#381E29';
+  const badgeTxtColor = pnlPct >= 0 ? C.success : C.danger;
+  
   const strategy = status?.active_strategy ?? 'Thunder';
   const session = status?.open_markets?.length > 0 ? (status.open_markets.includes('EURUSD') ? 'London' : 'New York') : 'London';
   const pairs = status?.markets_analyzed?.join(', ') || 'EUR/USD, XAUUSD, GBPUSD';
-
-  // Specific trend calculation for image
-  const avgScore = -0.2; // approx 20% sell matching image (+12.5% display)
-  const sellPct = 20;
-  const buyPct = 60;
 
   return (
     <SafeAreaView style={s.safe}>
@@ -176,20 +178,20 @@ function DashboardScreen() {
             <Text style={s.secLbl}>Balance</Text>
             <Text style={s.dashBigVal}>{fmt$(balance)}</Text>
             <View style={s.badgeWrap}>
-              <View style={s.badgeDanger}>
-                <Text style={s.badgeTxt}>↓ 20,6%</Text>
+              <View style={[s.badgeDanger, { backgroundColor: badgeColor }]}>
+                <Text style={[s.badgeTxt, { color: badgeTxtColor }]}>{pnlPctArrow} {pnlPctDisp}%</Text>
               </View>
-              <Text style={s.todayTxt}>-9.00 Today</Text>
+              <Text style={s.todayTxt}>{pnlTodayStr} Today</Text>
             </View>
           </View>
           <View style={{ flex: 1, paddingLeft: 10 }}>
             <Text style={s.secLbl}>Equity</Text>
             <Text style={s.dashBigVal}>{fmt$(equity)}</Text>
             <View style={s.badgeWrap}>
-              <View style={s.badgeDanger}>
-                <Text style={s.badgeTxt}>↓ 20,6%</Text>
+              <View style={[s.badgeDanger, { backgroundColor: badgeColor }]}>
+                <Text style={[s.badgeTxt, { color: badgeTxtColor }]}>{pnlPctArrow} {pnlPctDisp}%</Text>
               </View>
-              <Text style={s.todayTxt}>-9.00 Today</Text>
+              <Text style={s.todayTxt}>{pnlTodayStr} Today</Text>
             </View>
           </View>
         </View>
@@ -197,7 +199,7 @@ function DashboardScreen() {
         <View style={[s.splitRow, { marginTop: 8 }]}>
           <View style={{ flex: 1 }}>
             <Text style={s.secLbl}>Open P & L</Text>
-            <Text style={[s.dashHugeVal, { color: C.danger }]}>
+            <Text style={[s.dashHugeVal, { color: profit >= 0 ? C.success : C.danger }]}>
               {profit >= 0 ? '+' : ''}{fmt$(profit)}
             </Text>
           </View>
@@ -233,7 +235,7 @@ function DashboardScreen() {
         {/* AUTO / MANUAL Toggles */}
         <View style={s.btnRow}>
           <TouchableOpacity
-            style={[s.halfBtn, !isManual ? { backgroundColor: C.warning } : { backgroundColor: '#3B4151' }]}
+            style={[s.halfBtn, { marginRight: 12 }, !isManual ? { backgroundColor: C.warning } : { backgroundColor: '#3B4151' }]}
             onPress={() => toggleMode(false)}
           >
             <Text style={[s.halfBtnTxt, !isManual ? { color: '#FFF' } : { color: C.secondary }]}>AUTO</Text>
@@ -246,30 +248,7 @@ function DashboardScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Trend Info block */}
-        <View style={s.trendOuter}>
-          <View style={s.trendHead}>
-            <View>
-              <Text style={s.trendSub}>09:00 AM</Text>
-              <Text style={[s.trendMain, { color: C.danger }]}>{sellPct}% Sell</Text>
-            </View>
-            <View style={{ alignItems: 'center' }}>
-              <Text style={s.trendTitle}>Current Trend</Text>
-              <Text style={[s.trendAlert, { color: C.success }]}>
-                +12.5% (24h) ▲
-              </Text>
-            </View>
-            <View style={{ alignItems: 'flex-end' }}>
-              <Text style={s.trendSub}>02:00 PM</Text>
-              <Text style={[s.trendMain, { color: C.success }]}>{buyPct}% Buy</Text>
-            </View>
-          </View>
 
-          <View style={s.trendLinesBg}>
-            <View style={[s.trendLineS, { width: `${sellPct}%` }]} />
-            <View style={[s.trendLineB, { width: `${buyPct}%` }]} />
-          </View>
-        </View>
 
         {isPaused ? <View style={s.warnBand}><Text style={s.warnBandTxt}>Daily loss limit hit</Text></View> : null}
 
@@ -300,6 +279,7 @@ function DashboardScreen() {
 function SignalsScreen() {
   const [signals, setSignals] = useState({});
   const [now, setNow] = useState(Date.now());
+  const [expandedIds, setExpandedIds] = useState({});
 
   useEffect(() => {
     const u = onValue(ref(db, `users/${USER_ID}/pending_signals`), s => setSignals(s.val() ?? {}));
@@ -318,6 +298,10 @@ function SignalsScreen() {
     return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
   };
 
+  const toggleExpand = (key) => {
+    setExpandedIds(prev => ({ ...prev, [key]: !prev[key] }));
+  };
+
   const pending = Object.entries(signals)
     .filter(([, v]) => v.status === 'PENDING')
     .sort(([, a], [, b]) => b.pushed_at > a.pushed_at ? 1 : -1);
@@ -330,27 +314,49 @@ function SignalsScreen() {
   return (
     <SafeAreaView style={s.safe}>
       <ScrollView style={s.screen} contentContainerStyle={s.scrollList}>
+        {pending.length === 0 && history.length === 0 && (
+          <Text style={{ color: C.secondary, textAlign: 'center', marginTop: 50 }}>No pending signals or history.</Text>
+        )}
         {pending.map(([key, sig]) => {
           const isBuy = sig.direction === 'BUY';
           const subText = getMockPairNames(sig.symbol) || sig.strategy_name || 'Stock / Pair Info';
+          const isExpanded = expandedIds[key];
           return (
-            <View key={key} style={s.sigCard}>
-              <View style={s.sigLeft}>
-                <PairIcon symbol={sig.symbol} size={42} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={s.sigTitle}>{sig.symbol}</Text>
-                <Text style={s.sigSub}>{subText}</Text>
-                <Text style={[s.sigSub, { color: C.warning, marginTop: 4 }]}>Expires: {timeLeft(sig.expires_at)}</Text>
-              </View>
-              <View style={{ alignItems: 'flex-end', justifyContent: 'center' }}>
-                <TouchableOpacity onPress={() => respond(key, 'CONFIRMED')} style={{ marginBottom: 8, paddingHorizontal: 12, paddingVertical: 4, backgroundColor: C.success, borderRadius: 6 }}>
-                  <Text style={{ color: '#000', fontWeight: '700', fontSize: 13 }}>CONFIRM</Text>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => respond(key, 'REJECTED')} style={{ paddingHorizontal: 12, paddingVertical: 4, backgroundColor: C.danger, borderRadius: 6 }}>
-                  <Text style={{ color: '#FFF', fontWeight: '700', fontSize: 13 }}>REJECT</Text>
-                </TouchableOpacity>
-              </View>
+            <View key={key} style={s.sigCardCol}>
+              <TouchableOpacity 
+                style={s.sigCardTop} 
+                onPress={() => toggleExpand(key)} 
+                activeOpacity={0.7}
+              >
+                <View style={s.sigLeft}>
+                  <PairIcon symbol={sig.symbol} size={42} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.sigTitle}>{sig.symbol}</Text>
+                  <Text style={s.sigSub}>{subText}</Text>
+                </View>
+                <View style={{ alignItems: 'flex-end' }}>
+                  <Text style={[s.sigDir, { color: isBuy ? C.success : C.danger }]}>{sig.direction}</Text>
+                  <Text style={s.sigSlTp}>Entry: {sig.entry_price ?? '—'}</Text>
+                  <Text style={s.sigSlTp}>SL: {sig.suggested_sl}, TP: {sig.suggested_tp}</Text>
+                </View>
+              </TouchableOpacity>
+
+              {isExpanded && (
+                <View style={s.sigExpanded}>
+                  <Text style={[s.sigSub, { color: C.warning, marginBottom: 16, textAlign: 'center' }]}>
+                    Expires in {timeLeft(sig.expires_at)}
+                  </Text>
+                  <View style={s.sigBtnRow}>
+                    <TouchableOpacity onPress={() => respond(key, 'CONFIRMED')} style={s.sigAcceptBtn}>
+                      <Text style={s.sigAcceptBtnTxt}>ACCEPT</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => respond(key, 'REJECTED')} style={s.sigRejectBtn}>
+                      <Text style={s.sigRejectBtnTxt}>REJECT</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
             </View>
           );
         })}
@@ -361,17 +367,20 @@ function SignalsScreen() {
           const isBuy = sig.direction === 'BUY';
           const subText = getMockPairNames(sig.symbol) || sig.strategy_name || 'Stock / Pair Info';
           return (
-            <View key={key} style={s.sigCard}>
-              <View style={s.sigLeft}>
-                <PairIcon symbol={sig.symbol} size={42} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={s.sigTitle}>{sig.symbol}</Text>
-                <Text style={s.sigSub}>{subText}</Text>
-              </View>
-              <View style={{ alignItems: 'flex-end' }}>
-                <Text style={[s.sigDir, { color: isBuy ? C.success : C.danger }]}>{sig.direction}</Text>
-                <Text style={s.sigSlTp}>SL: {sig.suggested_sl}, TP: {sig.suggested_tp}</Text>
+            <View key={key} style={s.sigCardCol}>
+              <View style={s.sigCardTop}>
+                <View style={s.sigLeft}>
+                  <PairIcon symbol={sig.symbol} size={42} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.sigTitle}>{sig.symbol}</Text>
+                  <Text style={s.sigSub}>{subText}</Text>
+                </View>
+                <View style={{ alignItems: 'flex-end' }}>
+                  <Text style={[s.sigDir, { color: isBuy ? C.success : C.danger }]}>{sig.direction}</Text>
+                  <Text style={s.sigSlTp}>Entry: {sig.entry_price ?? '—'}</Text>
+                  <Text style={s.sigSlTp}>SL: {sig.suggested_sl}, TP: {sig.suggested_tp}</Text>
+                </View>
               </View>
             </View>
           );
@@ -392,6 +401,12 @@ function InsightsScreen() {
     return () => u();
   }, []);
 
+  const fmtTime = (isoString) => {
+    if (!isoString) return '--:--';
+    const d = new Date(isoString);
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
   const PAIRS = ['EURUSD', 'GBPUSD', 'XAUUSD'];
 
   return (
@@ -410,15 +425,16 @@ function InsightsScreen() {
               <View style={s.dragInd} />
               <View style={s.trendHead}>
                 <View>
-                  <Text style={s.trendSub}>09:00 AM</Text>
+                  <Text style={s.trendSub}>BEARISH</Text>
                   <Text style={[s.trendMain, { color: C.danger }]}>{sellPct}% Sell</Text>
                 </View>
                 <View style={{ alignItems: 'center' }}>
                   <Text style={s.trendTitle}>Current Trend</Text>
                   <Text style={[s.trendAlert, { color: isBull ? C.success : C.danger }]}>{trendDisp}</Text>
+                  <Text style={{ color: C.secondary, fontSize: 11, marginTop: 4 }}>Updated: {fmtTime(data.updated_at)}</Text>
                 </View>
                 <View style={{ alignItems: 'flex-end' }}>
-                  <Text style={s.trendSub}>02:00 PM</Text>
+                  <Text style={s.trendSub}>BULLISH</Text>
                   <Text style={[s.trendMain, { color: C.success }]}>{buyPct}% Buy</Text>
                 </View>
               </View>
@@ -446,7 +462,7 @@ function InsightsScreen() {
 
               {(data.gpt4_summary || data.grok_summary || data.risk_advisory) && (
                 <View style={s.gptBox}>
-                  <Text style={s.gptTitle}>Cureent Updates : Source GPT4</Text>
+                  <Text style={s.gptTitle}>Current Updates : Source {data.source || 'GPT4'}</Text>
                   {data.gpt4_summary && <Text style={s.gptText}>• {data.gpt4_summary}</Text>}
                   {data.grok_summary && <Text style={s.gptText}>• {data.grok_summary}</Text>}
                   {data.risk_advisory && <Text style={[s.gptText, { color: C.warning }]}>• {data.risk_advisory}</Text>}
@@ -479,6 +495,7 @@ function AlertsScreen() {
         {list.map(([key, sig]) => {
           const isBuy = sig.direction === 'BUY';
           const subText = getMockPairNames(sig.symbol) || 'Data Item';
+          const isExecuted = sig.alert_type === 'TRADE_EXECUTED';
           return (
             <View key={key} style={s.sigCard}>
               <View style={s.sigLeft}>
@@ -486,11 +503,20 @@ function AlertsScreen() {
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={s.sigTitle}>{sig.symbol}</Text>
-                <Text style={s.sigSub}>{subText}</Text>
+                <Text style={s.sigSub}>{isExecuted ? 'Trade Executed' : subText}</Text>
+                {isExecuted && (
+                  <Text style={[s.sigSlTp, { color: C.secondary, marginTop: 2 }]}>
+                    Ticket: #{sig.ticket} | Price: {sig.filled_price}
+                  </Text>
+                )}
               </View>
               <View style={{ alignItems: 'flex-end' }}>
                 <Text style={[s.sigDir, { color: isBuy ? C.success : C.danger }]}>{sig.direction}</Text>
-                <Text style={s.sigSlTp}>SL: {sig.suggested_sl}, TP: {sig.suggested_tp}</Text>
+                {!isExecuted ? (
+                  <Text style={s.sigSlTp}>SL: {sig.suggested_sl}, TP: {sig.suggested_tp}</Text>
+                ) : (
+                  <Text style={s.sigSlTp}>{sig.strategy || 'Thunder'}</Text>
+                )}
               </View>
             </View>
           );
@@ -521,10 +547,13 @@ function SettingsScreen() {
   };
 
   const toggleStrategy = async (name) => {
-    const cur = stratCfg[name]?.enabled === true;
-    await update(ref(db, `users/${USER_ID}/brave_config/strategy_config/${name}`), {
-      enabled: !cur,
+    const updates = {};
+    Object.keys(stratCfg).forEach(sName => {
+      updates[`strategy_config/${sName}/enabled`] = (sName === name);
     });
+    // Also update legacy field for bot backward compatibility
+    updates['active_strategy'] = name;
+    await update(ref(db, `users/${USER_ID}/brave_config`), updates);
   };
 
   const setMaxTrades = async (name, val) => {
@@ -738,6 +767,18 @@ const s = StyleSheet.create({
     flexDirection: 'row', backgroundColor: '#141822', borderWidth: 1, borderColor: '#232832',
     borderRadius: 14, padding: 14, marginBottom: 12, alignItems: 'center'
   },
+  sigCardCol: {
+    flexDirection: 'column', backgroundColor: '#141822', borderWidth: 1, borderColor: '#232832',
+    borderRadius: 14, padding: 14, marginBottom: 12, alignItems: 'stretch'
+  },
+  sigCardTop: { flexDirection: 'row', alignItems: 'center' },
+  sigExpanded: { marginTop: 16, paddingTop: 16, borderTopWidth: 1, borderTopColor: '#232832' },
+  sigBtnRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
+  sigAcceptBtn: { flex: 1, backgroundColor: C.warning, paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
+  sigAcceptBtnTxt: { color: '#FFF', fontWeight: '700', fontSize: 14 },
+  sigRejectBtn: { flex: 1, backgroundColor: C.manualBtn, paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
+  sigRejectBtnTxt: { color: '#FFF', fontWeight: '700', fontSize: 14 },
+  
   sigCardInner: { flexDirection: 'row', alignItems: 'center' },
   sigLeft: { marginRight: 14 },
   sigTitle: { color: C.primary, fontSize: 16, fontWeight: '700', marginBottom: 2 },

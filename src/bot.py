@@ -30,10 +30,12 @@ from config import (
 )
 
 from thunder import thunder
-from flow import flow as Flow
+from flow import Flow
 from frost import Frost
 from news_filter import NewsFilter
 from sentiment_gate import SentimentGate
+from sentiment_service import SentimentService
+import threading
 
 # ── Strategy registry ─────────────────────────────────────────────────
 STRATEGY_REGISTRY: dict = {
@@ -195,6 +197,7 @@ class BraveBot:
                 })
 
             self.command_ref.listen(self._handle_command)
+            self.brave_config_ref.listen(self._handle_config_change)
 
             self._update_status({
                 "is_running":      False,
@@ -295,6 +298,24 @@ class BraveBot:
 
         except Exception as e:
             logging.error(f"Error handling command: {e}")
+
+    def _handle_config_change(self, event) -> None:
+        """Listener for brave_config changes — updates dashboard instantly."""
+        try:
+            config = event.data
+            if not config:
+                return
+            
+            # Extract current enabled strategy
+            strat_cfg = config.get("strategy_config", {})
+            enabled_names = [name for name, cfg in strat_cfg.items() if cfg.get("enabled")]
+            
+            if enabled_names:
+                display_name = ", ".join(enabled_names)
+                logging.info(f"Config change detected — Active: {display_name}")
+                self._update_status({"active_strategy": display_name})
+        except Exception as e:
+            logging.error(f"Error handling config change: {e}")
 
     # ═══════════════════════════════════════════════════════════════
     # MARKET STATUS
@@ -478,15 +499,7 @@ class BraveBot:
         # ── Daily Loss Limiter ────────────────────────────────────────
         account = mt5.account_info()
         if account:
-            today = datetime.now().date().isoformat()
-            
-            if self._last_session_date != today or self._session_start_equity is None:
-                # Use current equity as the high-water mark for the new daily session
-                self._session_start_equity = account.equity
-                self._last_session_date    = today
-                logging.info(f"Daily session started — Equity: ${self._session_start_equity:.2f}")
-
-            session_pnl = account.equity - self._session_start_equity
+            session_pnl, _ = self._get_session_metrics(account)
             loss_limit  = -(self._session_start_equity * 0.05)
 
             if session_pnl <= loss_limit:
@@ -706,25 +719,40 @@ class BraveBot:
             result = mt5.order_send(request)
 
             if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-                logging.info(f"[{symbol}] Order placed — ticket: {getattr(result, 'order', 0)}")
+                ticket = getattr(result, "order", 0)
+                price  = getattr(result, "price", 0.0)
+                logging.info(f"[{symbol}] Order placed — ticket: {ticket} at {price}")
+                
                 self._log_trade_to_csv(symbol, signal, lot, result)
                 if self.firebase_enabled:
-                    # Log execution details for remote monitoring and later CSV analysis
                     try:
+                        # 1. Detailed execution record
                         self.trades_ref.push({
-                            "timestamp": datetime.now().isoformat(),
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
                             "symbol":    symbol,
                             "type":      f"{direction}_{sig_type}",
                             "entry":     price,
                             "sl":        sl,
                             "tp":        tp,
                             "lot":       lot,
-                            "ticket":    getattr(result, "order", 0),
+                            "ticket":    ticket,
                             "strategy":  strategy_name,
                             "session":   self._get_current_session(),
                         })
+                        
+                        # 2. Fast UI Alert
+                        self.alerts_ref.push({
+                            "alert_type":   "TRADE_EXECUTED",
+                            "symbol":       symbol,
+                            "direction":    direction,
+                            "ticket":       ticket,
+                            "filled_price": price,
+                            "retcode":      result.retcode,
+                            "strategy":     strategy_name,
+                            "sent_at":      datetime.now(timezone.utc).isoformat(),
+                        })
                     except Exception as e:
-                        logging.error(f"[{symbol}] Failed to log trade: {e}")
+                        logging.error(f"[{symbol}] trades record/alert push failed: {e}")
                 return result
             else:
                 err = result.comment if result else "No result from order_send"
@@ -780,6 +808,40 @@ class BraveBot:
     # ═══════════════════════════════════════════════════════════════
     # UTILITIES
     # ═══════════════════════════════════════════════════════════════
+
+    def _get_session_metrics(self, account) -> tuple[float, float]:
+        if not account:
+            return 0.0, 0.0
+        today = datetime.now().date().isoformat()
+        if self._last_session_date != today or self._session_start_equity is None:
+            self._session_start_equity = account.equity
+            self._last_session_date    = today
+            logging.info(f"Daily session started — Equity: ${self._session_start_equity:.2f}")
+        
+        session_pnl = account.equity - self._session_start_equity
+        session_pnl_pct = (session_pnl / self._session_start_equity * 100) if self._session_start_equity > 0 else 0.0
+        return session_pnl, session_pnl_pct
+
+    def _update_fast_status(self) -> None:
+        if not self.firebase_enabled:
+            return
+        try:
+            account = mt5.account_info()
+            if not account:
+                return
+            session_pnl, session_pnl_pct = self._get_session_metrics(account)
+            payload = {
+                "balance":         account.balance,
+                "equity":          account.equity,
+                "profit":          account.profit,
+                "open_positions":  self._count_positions(),
+                "session_pnl":     session_pnl,
+                "session_pnl_pct": session_pnl_pct,
+                "last_updated":    datetime.now().isoformat()
+            }
+            self.status_ref.update(payload)
+        except Exception:
+            pass
 
     def _count_positions(self, symbol: str | None = None) -> int:
         """
@@ -920,6 +982,18 @@ class BraveBot:
         logging.info(f"Strategies available: {list(STRATEGY_REGISTRY.keys())}")
         logging.info("=" * 60)
 
+        # ── Start Background Sentiment Service ──
+        def sentiment_worker():
+            try:
+                logging.info("[Thread] Starting background Sentiment Service...")
+                svc = SentimentService()
+                svc.run()
+            except Exception as e:
+                logging.error(f"[Thread] Sentiment Service failed: {e}")
+
+        sentiment_thread = threading.Thread(target=sentiment_worker, daemon=True)
+        sentiment_thread.start()
+
         self.is_running = True
         self._update_status({"is_running": True})
         self._health_check()
@@ -927,22 +1001,34 @@ class BraveBot:
         self.active_pairs      = self._select_pairs(max_pairs=3)
         self.last_pair_refresh = datetime.now()
 
+        last_signal_check = 0
+
         try:
             while True:
+                now_ts = time_module.time()
+
                 if not self.is_running:
-                    logging.info("Bot paused — waiting for start command...")
-                    time_module.sleep(self.CHECK_INTERVAL)
+                    if now_ts - last_signal_check >= self.CHECK_INTERVAL:
+                        logging.info("Bot paused — waiting for start command...")
+                        last_signal_check = now_ts
+                    time_module.sleep(1)
                     continue
 
-                elapsed = (datetime.now() - self.last_health_check).total_seconds()
-                if elapsed >= self.HEALTH_CHECK_INTERVAL:
-                    self._health_check()
+                # Fast background sync
+                self._update_fast_status()
 
-                config = self._get_config()
-                self._check_signals(config)
+                if now_ts - last_signal_check >= self.CHECK_INTERVAL:
+                    elapsed = (datetime.now() - self.last_health_check).total_seconds()
+                    if elapsed >= self.HEALTH_CHECK_INTERVAL:
+                        self._health_check()
 
-                logging.info(f"Sleeping {self.CHECK_INTERVAL}s...\n")
-                time_module.sleep(self.CHECK_INTERVAL)
+                    config = self._get_config()
+                    self._check_signals(config)
+
+                    logging.info(f"Sleeping {self.CHECK_INTERVAL}s (fast syncing in background)...\n")
+                    last_signal_check = time_module.time()
+
+                time_module.sleep(1)
 
         except KeyboardInterrupt:
             logging.info("Bot stopped (Ctrl+C)")

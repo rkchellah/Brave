@@ -53,7 +53,7 @@ from config import (
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-POLL_INTERVAL: int = 900          # seconds between full sentiment cycles (15 min)
+POLL_INTERVAL: int = 120          # seconds between full sentiment cycles (2 min)
 NEWS_HEADLINES: int = 10          # headlines to feed GPT-4 per symbol
 GROK_POSTS: int = 20              # X posts to feed Grok per symbol
 SENTIMENT_TTL_MINUTES: int = 60   # app shows "stale" warning after this
@@ -246,13 +246,10 @@ def _fetch_headlines(symbol: str) -> list[str]:
 
 def _analyse_with_gpt4(symbol: str, headlines: list[str]) -> dict:
     """
-    Send headlines to GPT-4 and get structured sentiment back.
-    Returns dict with: direction_bias, score, confidence, summary, risk_advisory
+    Try Gemini first. If it fails or no key, fallback to GPT-4, then Grok.
     """
     if not headlines:
         return _neutral_gpt4(symbol)
-
-    client = OpenAI(api_key=OPENAI_API_KEY)
 
     system_prompt = (
         "You are a professional forex and commodities analyst. "
@@ -275,7 +272,35 @@ Return ONLY valid JSON with these exact keys:
   "risk_advisory": "1 sentence plain-English risk warning or all-clear for a trader"
 }}"""
 
+    # 1. Try Gemini
+    from config import GEMINI_API_KEY
+    if GEMINI_API_KEY:
+        try:
+            from google import genai
+            from google.genai import types
+            
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=user_prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    response_mime_type="application/json",
+                    temperature=0.2,
+                )
+            )
+            raw = response.text
+            data = json.loads(raw)
+            data["source"] = "Gemini"
+            log.debug("Gemini result for %s: %s", symbol, data)
+            return data
+        except Exception as exc:
+            log.warning("Gemini failed for %s: %s. Falling back to GPT-4.", symbol, exc)
+
+    # 2. Try GPT-4
     try:
+        from config import OPENAI_API_KEY
+        client = OpenAI(api_key=OPENAI_API_KEY)
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
@@ -288,12 +313,32 @@ Return ONLY valid JSON with these exact keys:
         )
         raw = response.choices[0].message.content
         data = json.loads(raw)
+        data["source"] = "GPT-4"
         log.debug("GPT-4 result for %s: %s", symbol, data)
         return data
     except Exception as exc:
-        log.warning("GPT-4 failed for %s: %s", symbol, exc)
-        return _neutral_gpt4(symbol)
-
+        log.warning("GPT-4 failed for %s: %s. Falling back to Grok.", symbol, exc)
+        try:
+            from config import XAI_API_KEY
+            grok_client = OpenAI(api_key=XAI_API_KEY, base_url="https://api.x.ai/v1")
+            response = grok_client.chat.completions.create(
+                model="grok-3",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": user_prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+                max_tokens=300,
+            )
+            raw = response.choices[0].message.content
+            data = json.loads(raw)
+            data["source"] = "Grok"
+            log.debug("Grok fallback result for %s: %s", symbol, data)
+            return data
+        except Exception as grok_exc:
+            log.warning("Grok fallback also failed for %s: %s", symbol, grok_exc)
+            return _neutral_gpt4(symbol)
 
 def _neutral_gpt4(symbol: str) -> dict:
     return {
@@ -302,6 +347,7 @@ def _neutral_gpt4(symbol: str) -> dict:
         "confidence":     "LOW",
         "summary":        f"No recent news data available for {symbol}.",
         "risk_advisory":  "No news data — proceed with technical signals only.",
+        "source":         "Neutral (Fail)",
     }
 
 
@@ -431,6 +477,7 @@ def _synthesise(
         signal_direction=last_signal,
         news_headlines=headlines[:5],   # store top 5 for transparency in app
         updated_at=datetime.now(timezone.utc).isoformat(),
+        source=gpt4.get("source", "Unknown"),
     )
 
 
@@ -459,7 +506,6 @@ def generate_trade_reasoning(
             f"Social: {sentiment.grok_summary}"
         )
 
-    client = OpenAI(api_key=OPENAI_API_KEY)
     prompt = f"""A trading bot just placed this trade:
 Symbol: {symbol}
 Direction: {direction}
@@ -470,7 +516,24 @@ Entry: {entry_price}, SL: {sl}, TP: {tp}
 In 2-3 plain-English sentences, explain why this trade makes sense technically and fundamentally.
 Write as if explaining to a non-expert trader. Be honest if sentiment opposes the direction."""
 
+    # 1. Try Gemini
+    from config import GEMINI_API_KEY
+    if GEMINI_API_KEY:
+        try:
+            from google import genai
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt,
+                config=genai.types.GenerateContentConfig(temperature=0.4)
+            )
+            return response.text.strip()
+        except Exception as exc:
+            log.warning("Trade reasoning (Gemini) failed for %s: %s. Falling back to GPT-4.", symbol, exc)
+
+    # 2. Try GPT-4
     try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[{"role": "user", "content": prompt}],
@@ -479,8 +542,20 @@ Write as if explaining to a non-expert trader. Be honest if sentiment opposes th
         )
         return response.choices[0].message.content.strip()
     except Exception as exc:
-        log.warning("Trade reasoning failed for %s: %s", symbol, exc)
-        return f"{strategy_name} signal on {symbol}. Check chart for technical confirmation."
+        log.warning("Trade reasoning (GPT-4) failed for %s: %s. Falling back to Grok.", symbol, exc)
+        try:
+            from config import XAI_API_KEY
+            grok_client = OpenAI(api_key=XAI_API_KEY, base_url="https://api.x.ai/v1")
+            response = grok_client.chat.completions.create(
+                model="grok-3",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.4,
+                max_tokens=150,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as grok_exc:
+            log.warning("Grok fallback reasoning failed for %s: %s", symbol, grok_exc)
+            return f"{strategy_name} signal on {symbol}. Check chart for technical confirmation."
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
