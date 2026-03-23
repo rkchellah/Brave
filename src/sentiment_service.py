@@ -120,6 +120,7 @@ class SentimentResult:
     trade_alignment: str         # "ALIGNED" | "OPPOSED" | "NEUTRAL"
     signal_direction: str        # last known bot signal direction (filled later)
     news_headlines: list[str]    # raw headlines used (for transparency)
+    source: str                  # "Gemini" | "GPT-4" | "Grok"
     updated_at: str              # ISO timestamp
 
 
