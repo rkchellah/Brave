@@ -145,11 +145,11 @@ Brave/
     - [x] **Firebase**: `@react-native-firebase` installed and wired
     - [x] **Navigation**: Bottom tab navigation installed
     - [x] **Notifications**: `expo-notifications` installed
-    - [ ] Dashboard screen
-    - [ ] Signals screen (Human-in-the-Loop confirm/reject)
-    - [ ] AI Insights screen
-    - [ ] Alerts screen
-    - [ ] Settings screen
+    - [x] Dashboard screen
+    - [x] Signals screen (Human-in-the-Loop confirm/reject)
+    - [x] AI Insights screen
+    - [x] Alerts screen
+    - [x] Settings screen
 - [ ] Phase 4: Production Hardening
 
 ## Flow Strategy
