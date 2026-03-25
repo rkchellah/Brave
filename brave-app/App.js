@@ -11,10 +11,7 @@ import { initializeApp, getApps } from 'firebase/app';
 import { getDatabase, ref, onValue, set, update } from 'firebase/database';
 import { FlashList } from '@shopify/flash-list';
 import { StatusBar } from 'expo-status-bar';
-import * as SplashScreen from 'expo-splash-screen';
 
-// Prevent splash screen from hiding automatically
-SplashScreen.preventAutoHideAsync();
 
 // ── Firebase config ────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -80,7 +77,7 @@ const getMockPairNames = (sym) => {
 const PairIcon = memo(function PairIcon({ symbol, size = 44 }) {
   const s = String(symbol).toUpperCase();
   const flags = getFlags(s);
-  
+
   if (flags) {
     return (
       <View style={{ width: size, height: size }}>
@@ -115,7 +112,7 @@ const PairIcon = memo(function PairIcon({ symbol, size = 44 }) {
   if (s === 'TESLA') { bg = '#E31937'; icon = <MaterialCommunityIcons name="alpha-t" size={size * 0.6} color="#FFF" />; }
   else if (s === 'DHDI') { bg = '#F2A900'; icon = <MaterialCommunityIcons name="currency-chf" size={size * 0.5} color="#FFF" />; }
   else if (s === 'AMRI') { bg = '#E84142'; icon = <MaterialCommunityIcons name="triangle-outline" size={size * 0.5} color="#FFF" />; }
-  else if (s === 'BOE') { bg = '#0033A0'; icon = <MaterialCommunityIcons name="run-fast" size={size * 0.5} color="#FFF" style={{transform:[{rotate:'-45deg'}]}} />; }
+  else if (s === 'BOE') { bg = '#0033A0'; icon = <MaterialCommunityIcons name="run-fast" size={size * 0.5} color="#FFF" style={{ transform: [{ rotate: '-45deg' }] }} />; }
 
   return (
     <View style={{
@@ -130,15 +127,14 @@ const PairIcon = memo(function PairIcon({ symbol, size = 44 }) {
 
 const SignalTimer = memo(function SignalTimer({ expiresAt }) {
   const [now, setNow] = useState(Date.now());
-  
+
   useEffect(() => {
-    const tick = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(tick);
+    setDbReady(true);
   }, []);
 
   const secs = Math.max(0, Math.floor(expiresAt - now / 1000));
   const timeStr = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
-  
+
   return (
     <Text style={[s.sigSub, { color: C.warning, marginBottom: 16, textAlign: 'center' }]}>
       Expires in {timeStr}
@@ -153,9 +149,9 @@ const SignalCard = memo(function SignalCard({ sigKey, sig, isExpanded, onToggle,
 
   return (
     <View style={s.sigCardCol}>
-      <TouchableOpacity 
-        style={s.sigCardTop} 
-        onPress={() => onToggle?.(sigKey)} 
+      <TouchableOpacity
+        style={s.sigCardTop}
+        onPress={() => onToggle?.(sigKey)}
         activeOpacity={0.7}
         disabled={isHistory}
       >
@@ -231,7 +227,7 @@ const DashboardScreen = memo(function DashboardScreen() {
   const pnlTodayStr = (status?.session_pnl ?? -9.00).toFixed(2);
   const badgeColor = pnlPct >= 0 ? '#1E3829' : '#381E29';
   const badgeTxtColor = pnlPct >= 0 ? C.success : C.danger;
-  
+
   const strategy = status?.active_strategy ?? 'Thunder';
   const session = status?.open_markets?.length > 0 ? (status.open_markets.includes('EURUSD') ? 'London' : 'New York') : 'London';
   const pairs = status?.markets_analyzed?.join(', ') || 'EUR/USD, XAUUSD, GBPUSD';
@@ -252,7 +248,7 @@ const DashboardScreen = memo(function DashboardScreen() {
                 <Text style={[s.badgeTxt, { color: badgeTxtColor }]}>{pnlPctArrow} {pnlPctDisp}%</Text>
               </View>
               <Text style={s.todayTxt}>{pnlTodayStr} Today</Text>
-              </View>
+            </View>
           </View>
           <View style={{ flex: 1, paddingLeft: 10 }}>
             <Text style={s.secLbl}>Equity</Text>
@@ -262,7 +258,7 @@ const DashboardScreen = memo(function DashboardScreen() {
                 <Text style={[s.badgeTxt, { color: badgeTxtColor }]}>{pnlPctArrow} {pnlPctDisp}%</Text>
               </View>
               <Text style={s.todayTxt}>{pnlTodayStr} Today</Text>
-              </View>
+            </View>
           </View>
         </View>
 
@@ -374,12 +370,12 @@ const SignalsScreen = memo(function SignalsScreen() {
   const renderItem = useCallback(({ item }) => {
     const [key, sig] = item;
     return (
-      <SignalCard 
-        sigKey={key} 
-        sig={sig} 
-        isExpanded={expandedIds[key]} 
-        onToggle={toggleExpand} 
-        onRespond={respond} 
+      <SignalCard
+        sigKey={key}
+        sig={sig}
+        isExpanded={expandedIds[key]}
+        onToggle={toggleExpand}
+        onRespond={respond}
       />
     );
   }, [expandedIds, toggleExpand, respond]);
@@ -435,7 +431,7 @@ const InsightsScreen = memo(function InsightsScreen() {
           const sellPct = 100 - buyPct;
           const isBull = score >= 0;
           const trendDisp = `${isBull ? '+' : ''}${(score * 12.5).toFixed(1)}% (24h) ${isBull ? '▲' : '▼'}`;
-          
+
           return (
             <View key={i} style={s.insightGroup}>
               <View style={s.dragInd} />
@@ -650,22 +646,22 @@ const SettingsScreen = memo(function SettingsScreen() {
         })}
 
         <View style={s.setCard}>
-           <View style={s.setRow}>
-             <Text style={s.setKeyB}>Status</Text>
-             <Text style={s.setValMuted}>{health?.status ?? '—'}</Text>
-           </View>
-           <View style={s.setRow}>
-             <Text style={s.setKeyB}>MT5 Connected</Text>
-             <Text style={s.setValMuted}>{health?.mt5_connected === true ? 'Yes' : 'No'}</Text>
-           </View>
-           <View style={s.setRow}>
-             <Text style={s.setKeyB}>Account Trading</Text>
-             <Text style={s.setValMuted}>{health?.account_trade_allowed === true ? 'Allowed' : 'Restricted'}</Text>
-           </View>
-           <View style={s.setRow}>
-             <Text style={s.setKeyB}>Updated</Text>
-             <Text style={s.setValMuted}>{fmtTime(health?.timestamp)}</Text>
-           </View>
+          <View style={s.setRow}>
+            <Text style={s.setKeyB}>Status</Text>
+            <Text style={s.setValMuted}>{health?.status ?? '—'}</Text>
+          </View>
+          <View style={s.setRow}>
+            <Text style={s.setKeyB}>MT5 Connected</Text>
+            <Text style={s.setValMuted}>{health?.mt5_connected === true ? 'Yes' : 'No'}</Text>
+          </View>
+          <View style={s.setRow}>
+            <Text style={s.setKeyB}>Account Trading</Text>
+            <Text style={s.setValMuted}>{health?.account_trade_allowed === true ? 'Allowed' : 'Restricted'}</Text>
+          </View>
+          <View style={s.setRow}>
+            <Text style={s.setKeyB}>Updated</Text>
+            <Text style={s.setValMuted}>{fmtTime(health?.timestamp)}</Text>
+          </View>
         </View>
       </ScrollView>
     </View>
@@ -691,60 +687,60 @@ export default function App() {
     <View style={{ flex: 1, backgroundColor: '#000000' }}>
       <NavigationContainer>
         <Tab.Navigator
-        screenOptions={({ route }) => ({
-          headerShown: false,
-          tabBarStyle: {
-            position: 'absolute',
-            backgroundColor: C.tabBg,
-            bottom: 24,
-            left: 20,
-            right: 20,
-            height: 72,
-            borderRadius: 24,
-            borderTopWidth: 0,
-            paddingBottom: 0,
-            elevation: 10,
-            shadowColor: '#000',
-            shadowOffset: { width: 0, height: 10 },
-            shadowOpacity: 0.6,
-            shadowRadius: 10,
-          },
-          tabBarActiveTintColor: C.tabActive,
-          tabBarInactiveTintColor: C.tabInactive,
-          tabBarLabelStyle: {
-            fontSize: 11,
-            fontWeight: '600',
-            paddingBottom: 14,
-            marginTop: -6,
-          },
-          tabBarIcon: ({ focused, color }) => {
-            let iconName;
-            if (route.name === 'Dashboard') iconName = 'poll';
-            else if (route.name === 'Signals') iconName = 'fire';
-            else if (route.name === 'Insights') iconName = 'chart-timeline-variant';
-            else if (route.name === 'Alerts') iconName = 'alert-outline';
-            else if (route.name === 'Settings') iconName = 'cog-outline';
+          screenOptions={({ route }) => ({
+            headerShown: false,
+            tabBarStyle: {
+              position: 'absolute',
+              backgroundColor: C.tabBg,
+              bottom: 24,
+              left: 20,
+              right: 20,
+              height: 72,
+              borderRadius: 24,
+              borderTopWidth: 0,
+              paddingBottom: 0,
+              elevation: 10,
+              shadowColor: '#000',
+              shadowOffset: { width: 0, height: 10 },
+              shadowOpacity: 0.6,
+              shadowRadius: 10,
+            },
+            tabBarActiveTintColor: C.tabActive,
+            tabBarInactiveTintColor: C.tabInactive,
+            tabBarLabelStyle: {
+              fontSize: 11,
+              fontWeight: '600',
+              paddingBottom: 14,
+              marginTop: -6,
+            },
+            tabBarIcon: ({ focused, color }) => {
+              let iconName;
+              if (route.name === 'Dashboard') iconName = 'poll';
+              else if (route.name === 'Signals') iconName = 'fire';
+              else if (route.name === 'Insights') iconName = 'chart-timeline-variant';
+              else if (route.name === 'Alerts') iconName = 'alert-outline';
+              else if (route.name === 'Settings') iconName = 'cog-outline';
 
-            return (
-              <View style={{ alignItems: 'center', width: '100%', height: '100%', paddingTop: 16 }}>
-                {focused && (
-                  <View style={{
-                    position: 'absolute', top: 0, width: 22, height: 3,
-                    backgroundColor: '#FFF', borderRadius: 2
-                  }} />
-                )}
-                <MaterialCommunityIcons name={iconName} size={28} color={color} style={{ opacity: focused ? 1 : 0.8, marginBottom: 4 }} />
-              </View>
-            );
-          },
-        })}
-      >
-        <Tab.Screen name="Dashboard" component={DashboardScreen} />
-        <Tab.Screen name="Signals" component={SignalsScreen} />
-        <Tab.Screen name="Insights" component={InsightsScreen} />
-        <Tab.Screen name="Alerts" component={AlertsScreen} />
-        <Tab.Screen name="Settings" component={SettingsScreen} />
-      </Tab.Navigator>
+              return (
+                <View style={{ alignItems: 'center', width: '100%', height: '100%', paddingTop: 16 }}>
+                  {focused && (
+                    <View style={{
+                      position: 'absolute', top: 0, width: 22, height: 3,
+                      backgroundColor: '#FFF', borderRadius: 2
+                    }} />
+                  )}
+                  <MaterialCommunityIcons name={iconName} size={28} color={color} style={{ opacity: focused ? 1 : 0.8, marginBottom: 4 }} />
+                </View>
+              );
+            },
+          })}
+        >
+          <Tab.Screen name="Dashboard" component={DashboardScreen} />
+          <Tab.Screen name="Signals" component={SignalsScreen} />
+          <Tab.Screen name="Insights" component={InsightsScreen} />
+          <Tab.Screen name="Alerts" component={AlertsScreen} />
+          <Tab.Screen name="Settings" component={SettingsScreen} />
+        </Tab.Navigator>
       </NavigationContainer>
     </View>
   );
@@ -821,7 +817,7 @@ const s = StyleSheet.create({
   sigAcceptBtnTxt: { color: '#FFF', fontWeight: '700', fontSize: 14 },
   sigRejectBtn: { flex: 1, backgroundColor: C.manualBtn, paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
   sigRejectBtnTxt: { color: '#FFF', fontWeight: '700', fontSize: 14 },
-  
+
   sigCardInner: { flexDirection: 'row', alignItems: 'center' },
   sigLeft: { marginRight: 14 },
   sigTitle: { color: C.primary, fontSize: 16, fontWeight: '700', marginBottom: 2 },
