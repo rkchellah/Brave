@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, time, timezone
 
 
-class thunder:
+class Thunder:
     """
     Thunder — EMA Stack Scalping Strategy
     ----------------------------------------

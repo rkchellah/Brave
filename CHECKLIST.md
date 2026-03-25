@@ -42,6 +42,10 @@
 - [x] **Daily Loss Limiter (Kill Switch) added** — pauses bot if daily loss exceeds 5%
 - [x] **XAUUSD SL/TP dropped bug fixed** — `bot.py` now precisely rounds Entry, SL, and TP to `info.digits` for each symbol to prevent MT5 from silently stripping invalid decimals on metals/indices.
 - [x] **AI Sentiment Service added** — `sentiment_service.py` uses GPT-4 and Grok-3 to analysis market sentiment and push to Firebase.
+- [x] **Fix 1: Thunder Import** — Corrected `Thunder` class import and registry reference in `bot.py`.
+- [x] **Fix 2: Active Strategy tracking** — `active_strategy_name` now properly persists in `bot.py` for status updates.
+- [x] **Fix 3: Session Equity Guard** — Added `None` check for `_session_start_equity` to prevent crashes during loss limit calculations.
+- [x] **Fix 4: Firebase Singleton Fix** — Updated `SentimentService` to accept an `existing_db` flag, preventing "App already exists" crashes when running inside `bot.py`.
 
 ### Known Remaining Issues
 - [ ] US30/NAS100 returning no data from broker (broker may not support indices on demo)
@@ -112,6 +116,7 @@ Lesson for future devs: Match the project SDK to the device SDK (52 is currently
 - [x] **Firebase Permission denied** — app showed $0.00 because Firebase rules
       were set to deny public reads. Fix: set rules to `.read: true, .write: true`
       for development. Tighten with auth rules before live account.
+- [x] **React Native Upgrade** — Upgraded `react-native` to `0.79.2` and triggered a new Android preview build.
 
 ### send_command.py Status
 - [ ] Verify `send_command.py start` triggers bot correctly via Firebase listener

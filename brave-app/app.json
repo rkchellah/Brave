@@ -5,9 +5,20 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
+    "splash": {
+      "image": "./assets/splash.jpg",
+      "backgroundColor": "#000000",
+      "resizeMode": "contain"
+    },
     "android": {
       "newArchEnabled": false,
-      "package": "com.rkchellah.braveapp"
+      "package": "com.rkchellah.braveapp",
+      "jsEngine": "hermes"
+    },
+    "androidStatusBar": {
+      "backgroundColor": "#00000000",
+      "translucent": true,
+      "barStyle": "light-content"
     },
     "extra": {
       "eas": {

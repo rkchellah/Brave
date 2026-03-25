@@ -126,12 +126,7 @@ class SentimentResult:
 
 # ── Firebase ─────────────────────────────────────────────────────────────────
 
-def _init_firebase() -> None:
-    """Initialise Firebase Admin SDK (idempotent)."""
-    if not firebase_admin._apps:
-        cred = credentials.Certificate("serviceAccountKey.json")
-        firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_DATABASE_URL})
-        log.info("Firebase initialised")
+
 
 
 def _write_sentiment(result: SentimentResult) -> None:
@@ -188,17 +183,10 @@ def _get_finnhub() -> finnhub.Client:
     return _finnhub_client
 
 
-def _fetch_headlines(symbol: str) -> list[str]:
+def _fetch_headlines(symbol: str) -> tuple[list[str], list[str]]:
     """
     Fetch recent forex/market news headlines for the symbol via Finnhub.
-
-    Strategy:
-      - For FX pairs (EURUSD, GBPUSD): fetch general forex category news,
-        then keyword-filter for the pair's currencies.
-      - For commodity/index proxies (XAUUSD, US30, NAS100): fetch
-        company news for the ETF proxy ticker for tighter relevance.
-
-    Free tier: 60 calls/min — well within Brave's 15-min cycle.
+    Returns (headlines, sources).
     """
     client = _get_finnhub()
     keywords: list[str] = SYMBOL_KEYWORDS.get(symbol, {}).get("news", symbol).split()
@@ -218,29 +206,35 @@ def _fetch_headlines(symbol: str) -> list[str]:
 
         # Extract headlines and keyword-filter for relevance
         headlines: list[str] = []
+        sources: list[str] = []
         for article in articles:
             headline: str = article.get("headline", "")
+            source: str = article.get("source", "Market News")
             if not headline:
                 continue
             # Keep if any keyword appears in headline (case-insensitive)
             if any(kw.lower() in headline.lower() for kw in keywords):
                 headlines.append(headline)
+                if source not in sources:
+                    sources.append(source)
             if len(headlines) >= NEWS_HEADLINES:
                 break
 
         # If keyword filter was too strict, fall back to top unfiltered headlines
         if not headlines and not proxy_ticker:
-            headlines = [
-                a["headline"] for a in articles[:NEWS_HEADLINES]
-                if a.get("headline")
-            ]
+            for a in articles[:NEWS_HEADLINES]:
+                if a.get("headline"):
+                    headlines.append(a["headline"])
+                    s = a.get("source", "Market News")
+                    if s not in sources:
+                        sources.append(s)
 
-        log.debug("Finnhub: %d headlines for %s", len(headlines), symbol)
-        return headlines
+        log.debug("Finnhub: %d headlines, %d sources for %s", len(headlines), len(sources), symbol)
+        return headlines, sources
 
     except Exception as exc:
         log.warning("Finnhub fetch failed for %s: %s", symbol, exc)
-        return []
+        return [], []
 
 
 # ── GPT-4 sentiment ──────────────────────────────────────────────────────────
@@ -282,7 +276,7 @@ Return ONLY valid JSON with these exact keys:
             
             client = genai.Client(api_key=GEMINI_API_KEY)
             response = client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-2.0-flash',
                 contents=user_prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=system_prompt,
@@ -418,6 +412,7 @@ def _synthesise(
     gpt4: dict,
     grok: dict,
     headlines: list[str],
+    news_sources: list[str],
 ) -> SentimentResult:
     """
     Combine GPT-4 (news) + Grok (social) into a single SentimentResult.
@@ -466,6 +461,16 @@ def _synthesise(
     else:
         trade_alignment = "OPPOSED"
 
+    # Build a nice source string
+    # e.g., "Reuters, Bloomberg + X/Twitter"
+    all_sources = []
+    if news_sources:
+        all_sources.append(", ".join(news_sources[:3])) # limit to first 3
+    if grok.get("direction_bias") != "NEUTRAL":
+        all_sources.append("X/Twitter")
+    
+    source_str = " + ".join(all_sources) if all_sources else gpt4.get("source", "Market Context")
+
     return SentimentResult(
         symbol=symbol,
         direction_bias=direction_bias,
@@ -478,7 +483,7 @@ def _synthesise(
         signal_direction=last_signal,
         news_headlines=headlines[:5],   # store top 5 for transparency in app
         updated_at=datetime.now(timezone.utc).isoformat(),
-        source=gpt4.get("source", "Unknown"),
+        source=source_str,
     )
 
 
@@ -524,7 +529,7 @@ Write as if explaining to a non-expert trader. Be honest if sentiment opposes th
             from google import genai
             client = genai.Client(api_key=GEMINI_API_KEY)
             response = client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-2.0-flash',
                 contents=prompt,
                 config=genai.types.GenerateContentConfig(temperature=0.4)
             )
@@ -562,8 +567,12 @@ Write as if explaining to a non-expert trader. Be honest if sentiment opposes th
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 class SentimentService:
-    def __init__(self) -> None:
-        _init_firebase()
+    def __init__(self, existing_db: bool = False):
+        if not existing_db:
+            if not firebase_admin._apps:
+                cred = credentials.Certificate("serviceAccountKey.json")
+                firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_DATABASE_URL})
+        # rest of __init__ continues unchanged
         # Only process symbols that have keyword mappings
         self.symbols: list[str] = [s for s in SYMBOLS if s in SYMBOL_KEYWORDS]
         log.info(
@@ -580,7 +589,7 @@ class SentimentService:
                 log.info("Analysing %s...", symbol)
 
                 # 1. Fetch news headlines
-                headlines = _fetch_headlines(symbol)
+                headlines, news_sources = _fetch_headlines(symbol)
 
                 # 2. GPT-4 analyses news
                 gpt4_result = _analyse_with_gpt4(symbol, headlines)
@@ -589,7 +598,7 @@ class SentimentService:
                 grok_result = _analyse_with_grok(symbol)
 
                 # 4. Synthesise into one result
-                result = _synthesise(symbol, gpt4_result, grok_result, headlines)
+                result = _synthesise(symbol, gpt4_result, grok_result, headlines, news_sources)
 
                 # 5. Write to Firebase
                 _write_sentiment(result)

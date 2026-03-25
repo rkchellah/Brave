@@ -29,7 +29,7 @@ from config import (
     GATE_HARD_BLOCK, EXECUTION_MODE, SIGNAL_EXPIRY_SECONDS
 )
 
-from thunder import thunder
+from thunder import Thunder
 from flow import Flow
 from frost import Frost
 from news_filter import NewsFilter
@@ -39,7 +39,7 @@ import threading
 
 # ── Strategy registry ─────────────────────────────────────────────────
 STRATEGY_REGISTRY: dict = {
-    "thunder": thunder,
+    "thunder": Thunder,
     "flow":    Flow,
     "frost":   Frost,
 }
@@ -249,6 +249,7 @@ class BraveBot:
                     names = [s["name"] for s in active]
                     logging.info(f"Active strategies: {names}")
                     self._update_status({"active_strategy": ", ".join(names)})
+                    self.active_strategy_name = ", ".join(names)
                     return active
 
             # Backward compatibility — single active_strategy
@@ -500,6 +501,8 @@ class BraveBot:
         account = mt5.account_info()
         if account:
             session_pnl, _ = self._get_session_metrics(account)
+            if self._session_start_equity is None:
+                return
             loss_limit  = -(self._session_start_equity * 0.05)
 
             if session_pnl <= loss_limit:
@@ -986,10 +989,13 @@ class BraveBot:
         def sentiment_worker():
             try:
                 logging.info("[Thread] Starting background Sentiment Service...")
-                svc = SentimentService()
+                # SentimentService must NOT call firebase_admin.initialize_app()
+                # — bot.py already initialized it. Pass the existing db reference.
+                svc = SentimentService(existing_db=True)
                 svc.run()
             except Exception as e:
-                logging.error(f"[Thread] Sentiment Service failed: {e}")
+                logging.error(f"[Thread] Sentiment Service crashed: {e}")
+                traceback.print_exc()
 
         sentiment_thread = threading.Thread(target=sentiment_worker, daemon=True)
         sentiment_thread.start()

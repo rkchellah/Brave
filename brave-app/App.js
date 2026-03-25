@@ -1,13 +1,20 @@
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import React, { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity,
-  ScrollView, RefreshControl, SafeAreaView
+  StyleSheet, Text, View, ScrollView, TouchableOpacity,
+  RefreshControl, Dimensions, Appearance,
+  Platform
 } from 'react-native';
-import { useState, useEffect, useCallback } from 'react';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { initializeApp, getApps } from 'firebase/app';
 import { getDatabase, ref, onValue, set, update } from 'firebase/database';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { FlashList } from '@shopify/flash-list';
+import { StatusBar } from 'expo-status-bar';
+import * as SplashScreen from 'expo-splash-screen';
+
+// Prevent splash screen from hiding automatically
+SplashScreen.preventAutoHideAsync();
 
 // ── Firebase config ────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -70,7 +77,7 @@ const getMockPairNames = (sym) => {
   return null;
 }
 
-function PairIcon({ symbol, size = 44 }) {
+const PairIcon = memo(function PairIcon({ symbol, size = 44 }) {
   const s = String(symbol).toUpperCase();
   const flags = getFlags(s);
   
@@ -119,12 +126,74 @@ function PairIcon({ symbol, size = 44 }) {
       {icon ? icon : <Text style={{ color: '#FFF', fontSize: size * 0.4, fontWeight: '700' }}>{initial}</Text>}
     </View>
   );
-}
+});
+
+const SignalTimer = memo(function SignalTimer({ expiresAt }) {
+  const [now, setNow] = useState(Date.now());
+  
+  useEffect(() => {
+    const tick = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(tick);
+  }, []);
+
+  const secs = Math.max(0, Math.floor(expiresAt - now / 1000));
+  const timeStr = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+  
+  return (
+    <Text style={[s.sigSub, { color: C.warning, marginBottom: 16, textAlign: 'center' }]}>
+      Expires in {timeStr}
+    </Text>
+  );
+});
+
+const SignalCard = memo(function SignalCard({ sigKey, sig, isExpanded, onToggle, onRespond }) {
+  const isBuy = sig.direction === 'BUY';
+  const subText = getMockPairNames(sig.symbol) || sig.strategy_name || 'Stock / Pair Info';
+  const isHistory = sig.status !== 'PENDING';
+
+  return (
+    <View style={s.sigCardCol}>
+      <TouchableOpacity 
+        style={s.sigCardTop} 
+        onPress={() => onToggle?.(sigKey)} 
+        activeOpacity={0.7}
+        disabled={isHistory}
+      >
+        <View style={s.sigLeft}>
+          <PairIcon symbol={sig.symbol} size={42} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={s.sigTitle}>{sig.symbol}</Text>
+          <Text style={s.sigSub}>{subText}</Text>
+        </View>
+        <View style={{ alignItems: 'flex-end' }}>
+          <Text style={[s.sigDir, { color: isBuy ? C.success : C.danger }]}>{sig.direction}</Text>
+          <Text style={s.sigSlTp}>Entry: {sig.entry_price ?? '—'}</Text>
+          <Text style={s.sigSlTp}>SL: {sig.suggested_sl}, TP: {sig.suggested_tp}</Text>
+        </View>
+      </TouchableOpacity>
+
+      {isExpanded && !isHistory && (
+        <View style={s.sigExpanded}>
+          <SignalTimer expiresAt={sig.expires_at} />
+          <View style={s.sigBtnRow}>
+            <TouchableOpacity onPress={() => onRespond(sigKey, 'CONFIRMED')} style={s.sigAcceptBtn}>
+              <Text style={s.sigAcceptBtnTxt}>ACCEPT</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => onRespond(sigKey, 'REJECTED')} style={s.sigRejectBtn}>
+              <Text style={s.sigRejectBtnTxt}>REJECT</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+    </View>
+  );
+});
 
 // ════════════════════════════════════════════════════════════════════
 // DASHBOARD SCREEN
 // ════════════════════════════════════════════════════════════════════
-function DashboardScreen() {
+const DashboardScreen = memo(function DashboardScreen() {
   const [status, setStatus] = useState(null);
   const [braveConfig, setBraveConfig] = useState(null);
   const [sentiment, setSentiment] = useState({});
@@ -142,17 +211,17 @@ function DashboardScreen() {
     setTimeout(() => setRefreshing(false), 800);
   }, []);
 
-  const sendCommand = async (action) => {
+  const sendCommand = useCallback(async (action) => {
     await set(ref(db, `users/${USER_ID}/commands`), { action, timestamp: new Date().toISOString() });
-  };
+  }, []);
 
-  const toggleMode = async (manual) => {
+  const toggleMode = useCallback(async (manual) => {
     await update(ref(db, `users/${USER_ID}/brave_config`), { execution_mode: manual ? 'MANUAL' : 'AUTO' });
-  };
+  }, []);
 
   const isPaused = status?.paused_reason === 'DAILY_LOSS_LIMIT';
   const isManual = String(braveConfig?.execution_mode ?? 'AUTO').toUpperCase() === 'MANUAL';
-  const balance = status?.balance ?? 350.61; // Fallback to match image if db isn't there
+  const balance = status?.balance ?? 350.61;
   const equity = status?.equity ?? 350.61;
   const profit = status?.profit ?? -10.40;
   const positions = status?.open_positions ?? 1;
@@ -168,7 +237,8 @@ function DashboardScreen() {
   const pairs = status?.markets_analyzed?.join(', ') || 'EUR/USD, XAUUSD, GBPUSD';
 
   return (
-    <SafeAreaView style={s.safe}>
+    <View style={[s.safe, { paddingTop: Platform.OS === 'android' ? 0 : 20 }]}>
+      <StatusBar style="light" translucent={true} backgroundColor="transparent" />
       <ScrollView
         style={s.screen} contentContainerStyle={s.scrollDash}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.warning} />}
@@ -182,7 +252,7 @@ function DashboardScreen() {
                 <Text style={[s.badgeTxt, { color: badgeTxtColor }]}>{pnlPctArrow} {pnlPctDisp}%</Text>
               </View>
               <Text style={s.todayTxt}>{pnlTodayStr} Today</Text>
-            </View>
+              </View>
           </View>
           <View style={{ flex: 1, paddingLeft: 10 }}>
             <Text style={s.secLbl}>Equity</Text>
@@ -192,7 +262,7 @@ function DashboardScreen() {
                 <Text style={[s.badgeTxt, { color: badgeTxtColor }]}>{pnlPctArrow} {pnlPctDisp}%</Text>
               </View>
               <Text style={s.todayTxt}>{pnlTodayStr} Today</Text>
-            </View>
+              </View>
           </View>
         </View>
 
@@ -209,7 +279,6 @@ function DashboardScreen() {
           </View>
         </View>
 
-        {/* Info card (Outline look) */}
         <View style={s.outlineCard}>
           <View style={s.outlineRow}>
             <Text style={s.outlineLbl}>Strategy</Text>
@@ -232,7 +301,6 @@ function DashboardScreen() {
           </View>
         </View>
 
-        {/* AUTO / MANUAL Toggles */}
         <View style={s.btnRow}>
           <TouchableOpacity
             style={[s.halfBtn, { marginRight: 12 }, !isManual ? { backgroundColor: C.warning } : { backgroundColor: '#3B4151' }]}
@@ -248,11 +316,8 @@ function DashboardScreen() {
           </TouchableOpacity>
         </View>
 
-
-
         {isPaused ? <View style={s.warnBand}><Text style={s.warnBandTxt}>Daily loss limit hit</Text></View> : null}
 
-        {/* Action STOP / START */}
         <View style={s.btnRow}>
           <TouchableOpacity
             style={[s.actionStop, { flex: 1 }]}
@@ -267,133 +332,83 @@ function DashboardScreen() {
             <Text style={s.actionTxt}>START</Text>
           </TouchableOpacity>
         </View>
-
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
-}
+});
 
 // ════════════════════════════════════════════════════════════════════
 // SIGNALS SCREEN
 // ════════════════════════════════════════════════════════════════════
-function SignalsScreen() {
+const SignalsScreen = memo(function SignalsScreen() {
   const [signals, setSignals] = useState({});
-  const [now, setNow] = useState(Date.now());
   const [expandedIds, setExpandedIds] = useState({});
 
   useEffect(() => {
     const u = onValue(ref(db, `users/${USER_ID}/pending_signals`), s => setSignals(s.val() ?? {}));
-    const tick = setInterval(() => setNow(Date.now()), 1000);
-    return () => { u(); clearInterval(tick); };
+    return () => u();
   }, []);
 
-  const respond = async (key, response) => {
+  const respond = useCallback(async (key, response) => {
     await update(ref(db, `users/${USER_ID}/pending_signals/${key}`), {
       status: response, responded_at: new Date().toISOString(),
     });
-  };
+  }, []);
 
-  const timeLeft = expiresAt => {
-    const secs = Math.max(0, Math.floor(expiresAt - now / 1000));
-    return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
-  };
-
-  const toggleExpand = (key) => {
+  const toggleExpand = useCallback((key) => {
     setExpandedIds(prev => ({ ...prev, [key]: !prev[key] }));
-  };
+  }, []);
 
-  const pending = Object.entries(signals)
-    .filter(([, v]) => v.status === 'PENDING')
-    .sort(([, a], [, b]) => b.pushed_at > a.pushed_at ? 1 : -1);
+  const data = useMemo(() => {
+    const all = Object.entries(signals);
+    const pending = all
+      .filter(([, v]) => v.status === 'PENDING')
+      .sort(([, a], [, b]) => b.pushed_at > a.pushed_at ? 1 : -1);
+    const history = all
+      .filter(([, v]) => v.status !== 'PENDING')
+      .sort(([, a], [, b]) => b.pushed_at > a.pushed_at ? 1 : -1)
+      .slice(0, 15);
+    return [...pending, ...history];
+  }, [signals]);
 
-  const history = Object.entries(signals)
-    .filter(([, v]) => v.status !== 'PENDING')
-    .sort(([, a], [, b]) => b.pushed_at > a.pushed_at ? 1 : -1)
-    .slice(0, 15);
+  const renderItem = useCallback(({ item }) => {
+    const [key, sig] = item;
+    return (
+      <SignalCard 
+        sigKey={key} 
+        sig={sig} 
+        isExpanded={expandedIds[key]} 
+        onToggle={toggleExpand} 
+        onRespond={respond} 
+      />
+    );
+  }, [expandedIds, toggleExpand, respond]);
 
   return (
-    <SafeAreaView style={s.safe}>
-      <ScrollView style={s.screen} contentContainerStyle={s.scrollList}>
-        {pending.length === 0 && history.length === 0 && (
+    <View style={[s.safe, { paddingTop: Platform.OS === 'android' ? 0 : 20 }]}>
+      <StatusBar style="light" translucent={true} backgroundColor="transparent" />
+      <View style={s.screen}>
+        {data.length === 0 ? (
           <Text style={{ color: C.secondary, textAlign: 'center', marginTop: 50 }}>No pending signals or history.</Text>
+        ) : (
+          <FlashList
+            data={data}
+            renderItem={renderItem}
+            keyExtractor={item => item[0]}
+            estimatedItemSize={100}
+            contentContainerStyle={[s.scrollList, { paddingBottom: 100 }]}
+            showsVerticalScrollIndicator={false}
+          />
         )}
-        {pending.map(([key, sig]) => {
-          const isBuy = sig.direction === 'BUY';
-          const subText = getMockPairNames(sig.symbol) || sig.strategy_name || 'Stock / Pair Info';
-          const isExpanded = expandedIds[key];
-          return (
-            <View key={key} style={s.sigCardCol}>
-              <TouchableOpacity 
-                style={s.sigCardTop} 
-                onPress={() => toggleExpand(key)} 
-                activeOpacity={0.7}
-              >
-                <View style={s.sigLeft}>
-                  <PairIcon symbol={sig.symbol} size={42} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.sigTitle}>{sig.symbol}</Text>
-                  <Text style={s.sigSub}>{subText}</Text>
-                </View>
-                <View style={{ alignItems: 'flex-end' }}>
-                  <Text style={[s.sigDir, { color: isBuy ? C.success : C.danger }]}>{sig.direction}</Text>
-                  <Text style={s.sigSlTp}>Entry: {sig.entry_price ?? '—'}</Text>
-                  <Text style={s.sigSlTp}>SL: {sig.suggested_sl}, TP: {sig.suggested_tp}</Text>
-                </View>
-              </TouchableOpacity>
-
-              {isExpanded && (
-                <View style={s.sigExpanded}>
-                  <Text style={[s.sigSub, { color: C.warning, marginBottom: 16, textAlign: 'center' }]}>
-                    Expires in {timeLeft(sig.expires_at)}
-                  </Text>
-                  <View style={s.sigBtnRow}>
-                    <TouchableOpacity onPress={() => respond(key, 'CONFIRMED')} style={s.sigAcceptBtn}>
-                      <Text style={s.sigAcceptBtnTxt}>ACCEPT</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity onPress={() => respond(key, 'REJECTED')} style={s.sigRejectBtn}>
-                      <Text style={s.sigRejectBtnTxt}>REJECT</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              )}
-            </View>
-          );
-        })}
-
-        {history.length > 0 && pending.length > 0 && <View style={s.divLineList} />}
-
-        {history.map(([key, sig]) => {
-          const isBuy = sig.direction === 'BUY';
-          const subText = getMockPairNames(sig.symbol) || sig.strategy_name || 'Stock / Pair Info';
-          return (
-            <View key={key} style={s.sigCardCol}>
-              <View style={s.sigCardTop}>
-                <View style={s.sigLeft}>
-                  <PairIcon symbol={sig.symbol} size={42} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.sigTitle}>{sig.symbol}</Text>
-                  <Text style={s.sigSub}>{subText}</Text>
-                </View>
-                <View style={{ alignItems: 'flex-end' }}>
-                  <Text style={[s.sigDir, { color: isBuy ? C.success : C.danger }]}>{sig.direction}</Text>
-                  <Text style={s.sigSlTp}>Entry: {sig.entry_price ?? '—'}</Text>
-                  <Text style={s.sigSlTp}>SL: {sig.suggested_sl}, TP: {sig.suggested_tp}</Text>
-                </View>
-              </View>
-            </View>
-          );
-        })}
-      </ScrollView>
-    </SafeAreaView>
+      </View>
+    </View>
   );
-}
+});
 
 // ════════════════════════════════════════════════════════════════════
 // INSIGHTS SCREEN
 // ════════════════════════════════════════════════════════════════════
-function InsightsScreen() {
+const InsightsScreen = memo(function InsightsScreen() {
   const [sentiment, setSentiment] = useState({});
 
   useEffect(() => {
@@ -401,17 +416,18 @@ function InsightsScreen() {
     return () => u();
   }, []);
 
-  const fmtTime = (isoString) => {
+  const fmtT = useCallback((isoString) => {
     if (!isoString) return '--:--';
     const d = new Date(isoString);
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  };
+  }, []);
 
-  const PAIRS = ['EURUSD', 'GBPUSD', 'XAUUSD'];
+  const PAIRS = useMemo(() => ['EURUSD', 'GBPUSD', 'XAUUSD'], []);
 
   return (
-    <SafeAreaView style={s.safe}>
-      <ScrollView style={s.screen} contentContainerStyle={s.scrollList}>
+    <View style={[s.safe, { paddingTop: Platform.OS === 'android' ? 0 : 20 }]}>
+      <StatusBar style="light" translucent={true} backgroundColor="transparent" />
+      <ScrollView style={s.screen} contentContainerStyle={[s.scrollList, { paddingBottom: 100 }]}>
         {PAIRS.map((pair, i) => {
           const data = sentiment[pair] || {};
           const score = data.score ?? 0;
@@ -431,7 +447,7 @@ function InsightsScreen() {
                 <View style={{ alignItems: 'center' }}>
                   <Text style={s.trendTitle}>Current Trend</Text>
                   <Text style={[s.trendAlert, { color: isBull ? C.success : C.danger }]}>{trendDisp}</Text>
-                  <Text style={{ color: C.secondary, fontSize: 11, marginTop: 4 }}>Updated: {fmtTime(data.updated_at)}</Text>
+                  <Text style={{ color: C.secondary, fontSize: 11, marginTop: 4 }}>Updated: {fmtT(data.updated_at)}</Text>
                 </View>
                 <View style={{ alignItems: 'flex-end' }}>
                   <Text style={s.trendSub}>BULLISH</Text>
@@ -462,7 +478,7 @@ function InsightsScreen() {
 
               {(data.gpt4_summary || data.grok_summary || data.risk_advisory) && (
                 <View style={s.gptBox}>
-                  <Text style={s.gptTitle}>Current Updates : Source {data.source || 'GPT4'}</Text>
+                  <Text style={s.gptTitle}>Source: {data.source || 'Market Data'}</Text>
                   {data.gpt4_summary && <Text style={s.gptText}>• {data.gpt4_summary}</Text>}
                   {data.grok_summary && <Text style={s.gptText}>• {data.grok_summary}</Text>}
                   {data.risk_advisory && <Text style={[s.gptText, { color: C.warning }]}>• {data.risk_advisory}</Text>}
@@ -472,64 +488,78 @@ function InsightsScreen() {
           );
         })}
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
-}
+});
 
 // ════════════════════════════════════════════════════════════════════
 // ALERTS SCREEN
 // ════════════════════════════════════════════════════════════════════
-function AlertsScreen() {
+const AlertsScreen = memo(function AlertsScreen() {
   const [alerts, setAlerts] = useState({});
   useEffect(() => {
     const u = onValue(ref(db, `users/${USER_ID}/alerts`), s => setAlerts(s.val() ?? {}));
     return () => u();
   }, []);
-  const list = Object.entries(alerts)
-    .sort(([, a], [, b]) => b.sent_at > a.sent_at ? 1 : -1)
-    .slice(0, 30);
+
+  const data = useMemo(() => {
+    return Object.entries(alerts)
+      .sort(([, a], [, b]) => b.sent_at > a.sent_at ? 1 : -1)
+      .slice(0, 30);
+  }, [alerts]);
+
+  const renderItem = useCallback(({ item }) => {
+    const [key, sig] = item;
+    const isBuy = sig.direction === 'BUY';
+    const subText = getMockPairNames(sig.symbol) || 'Data Item';
+    const isExecuted = sig.alert_type === 'TRADE_EXECUTED';
+    return (
+      <View style={s.sigCard}>
+        <View style={s.sigLeft}>
+          <PairIcon symbol={sig.symbol} size={42} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={s.sigTitle}>{sig.symbol}</Text>
+          <Text style={s.sigSub}>{isExecuted ? 'Trade Executed' : subText}</Text>
+          {isExecuted && (
+            <Text style={[s.sigSlTp, { color: C.secondary, marginTop: 2 }]}>
+              Ticket: #{sig.ticket} | Price: {sig.filled_price}
+            </Text>
+          )}
+        </View>
+        <View style={{ alignItems: 'flex-end' }}>
+          <Text style={[s.sigDir, { color: isBuy ? C.success : C.danger }]}>{sig.direction}</Text>
+          {!isExecuted ? (
+            <Text style={s.sigSlTp}>SL: {sig.suggested_sl}, TP: {sig.suggested_tp}</Text>
+          ) : (
+            <Text style={s.sigSlTp}>{sig.strategy || 'Thunder'}</Text>
+          )}
+        </View>
+      </View>
+    );
+  }, []);
 
   return (
-    <SafeAreaView style={s.safe}>
-      <ScrollView style={s.screen} contentContainerStyle={s.scrollList}>
-        {list.map(([key, sig]) => {
-          const isBuy = sig.direction === 'BUY';
-          const subText = getMockPairNames(sig.symbol) || 'Data Item';
-          const isExecuted = sig.alert_type === 'TRADE_EXECUTED';
-          return (
-            <View key={key} style={s.sigCard}>
-              <View style={s.sigLeft}>
-                <PairIcon symbol={sig.symbol} size={42} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={s.sigTitle}>{sig.symbol}</Text>
-                <Text style={s.sigSub}>{isExecuted ? 'Trade Executed' : subText}</Text>
-                {isExecuted && (
-                  <Text style={[s.sigSlTp, { color: C.secondary, marginTop: 2 }]}>
-                    Ticket: #{sig.ticket} | Price: {sig.filled_price}
-                  </Text>
-                )}
-              </View>
-              <View style={{ alignItems: 'flex-end' }}>
-                <Text style={[s.sigDir, { color: isBuy ? C.success : C.danger }]}>{sig.direction}</Text>
-                {!isExecuted ? (
-                  <Text style={s.sigSlTp}>SL: {sig.suggested_sl}, TP: {sig.suggested_tp}</Text>
-                ) : (
-                  <Text style={s.sigSlTp}>{sig.strategy || 'Thunder'}</Text>
-                )}
-              </View>
-            </View>
-          );
-        })}
-      </ScrollView>
-    </SafeAreaView>
+    <View style={[s.safe, { paddingTop: Platform.OS === 'android' ? 0 : 20 }]}>
+      <StatusBar style="light" translucent={true} backgroundColor="transparent" />
+      <View style={s.screen}>
+        <FlashList
+          data={data}
+          renderItem={renderItem}
+          keyExtractor={item => item[0]}
+          estimatedItemSize={80}
+          contentContainerStyle={[s.scrollList, { paddingBottom: 100 }]}
+          showsVerticalScrollIndicator={false}
+        />
+      </View>
+    </View>
   );
-}
+});
 
 // ════════════════════════════════════════════════════════════════════
 // SETTINGS SCREEN
 // ════════════════════════════════════════════════════════════════════
-function SettingsScreen() {
+const SettingsScreen = memo(function SettingsScreen() {
   const [braveConfig, setBraveConfig] = useState(null);
   const [health, setHealth] = useState(null);
   const [expanded, setExpanded] = useState({ thunder: true, frost: false, flow: false });
@@ -540,37 +570,37 @@ function SettingsScreen() {
     return () => { u1(); u2(); };
   }, []);
 
-  const stratCfg = braveConfig?.strategy_config ?? {
+  const stratCfg = useMemo(() => braveConfig?.strategy_config ?? {
     thunder: { enabled: true, max_trades: 2 },
     frost: { enabled: false, max_trades: 2 },
     flow: { enabled: false, max_trades: 2 },
-  };
+  }, [braveConfig]);
 
-  const toggleStrategy = async (name) => {
+  const toggleStrategy = useCallback(async (name) => {
     const updates = {};
     Object.keys(stratCfg).forEach(sName => {
       updates[`strategy_config/${sName}/enabled`] = (sName === name);
     });
-    // Also update legacy field for bot backward compatibility
     updates['active_strategy'] = name;
     await update(ref(db, `users/${USER_ID}/brave_config`), updates);
-  };
+  }, [stratCfg]);
 
-  const setMaxTrades = async (name, val) => {
+  const setMaxTrades = useCallback(async (name, val) => {
     await update(ref(db, `users/${USER_ID}/brave_config/strategy_config/${name}`), {
       max_trades: val,
     });
-  };
+  }, []);
 
-  const STRAT_INFO = {
+  const STRAT_INFO = useMemo(() => ({
     thunder: { label: 'Thunder', detail: 'Breakout:', detailVal: 'London+NY' },
     frost: { label: 'Frost', detail: null, detailVal: null },
     flow: { label: 'Flow', detail: null, detailVal: null },
-  };
+  }), []);
 
   return (
-    <SafeAreaView style={s.safe}>
-      <ScrollView style={s.screen} contentContainerStyle={s.scrollList}>
+    <View style={[s.safe, { paddingTop: Platform.OS === 'android' ? 0 : 20 }]}>
+      <StatusBar style="light" translucent={true} backgroundColor="transparent" />
+      <ScrollView style={s.screen} contentContainerStyle={[s.scrollList, { paddingBottom: 100 }]}>
         {['thunder', 'frost', 'flow'].map(name => {
           const info = STRAT_INFO[name];
           const cfg = stratCfg[name] ?? { enabled: false, max_trades: 2 };
@@ -638,17 +668,29 @@ function SettingsScreen() {
            </View>
         </View>
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
-}
+});
 
 // ════════════════════════════════════════════════════════════════════
 // TAB NAVIGATOR
 // ════════════════════════════════════════════════════════════════════
 export default function App() {
+  const [dbReady, setDbReady] = useState(false);
+
+  useEffect(() => {
+    // Hide splash screen when component mounts
+    const hideSplash = async () => {
+      await SplashScreen.hideAsync();
+      setDbReady(true);
+    };
+    hideSplash();
+  }, []);
+
   return (
-    <NavigationContainer>
-      <Tab.Navigator
+    <View style={{ flex: 1, backgroundColor: '#000000' }}>
+      <NavigationContainer>
+        <Tab.Navigator
         screenOptions={({ route }) => ({
           headerShown: false,
           tabBarStyle: {
@@ -703,7 +745,8 @@ export default function App() {
         <Tab.Screen name="Alerts" component={AlertsScreen} />
         <Tab.Screen name="Settings" component={SettingsScreen} />
       </Tab.Navigator>
-    </NavigationContainer>
+      </NavigationContainer>
+    </View>
   );
 }
 
@@ -713,7 +756,7 @@ export default function App() {
 const s = StyleSheet.create({
   safe: { flex: 1, backgroundColor: C.bg },
   screen: { flex: 1, backgroundColor: C.bg },
-  scrollDash: { paddingHorizontal: 20, paddingTop: 30, paddingBottom: 120 },
+  scrollDash: { paddingHorizontal: 16, paddingTop: 30, paddingBottom: 120 },
   scrollList: { paddingHorizontal: 16, paddingTop: 20, paddingBottom: 120 },
 
   // Dashboard blocks

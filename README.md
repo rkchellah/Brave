@@ -137,10 +137,10 @@ Brave/
     - [x] **Auto-Execution**: 1% risk-based lot sizing
     - [x] **News Filter**: FF Calendar integration
     - [x] **Daily Loss Limiter**: 5% session equity protection
-    - [x] **Stability**: Log rotation + SSE reconnect handling
-    - [x] **Thunder Strategy**: EMA Stack Scalper (+273% backtest)
+    - [x] **Stability**: Log rotation + SSE reconnect handling + Firebase Singleton Fix
+    - [x] **Thunder Strategy**: EMA Stack Scalper (+273% backtest) (Class import fixed)
 - [x] Phase 3: Mobile App — Complete
-    - [x] **Stack**: React Native + Expo SDK 52 (Safest for compatibility)
+    - [x] **Stack**: React Native + Expo SDK 52 (React Native upgraded to 0.79.2)
     - [x] **Device**: Running live on Android via Expo Go
     - [x] **Firebase**: Real-time sync for signals, status, and config
     - [x] **Navigation**: Bottom tab navigation
