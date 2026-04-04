@@ -1,58 +1,54 @@
-# Brave — Architecture Document
-> For AI agents and developers. Read this before touching any file.
+# QuantifyX — Architecture Document
+> Read this before touching any file. For AI agents and developers.
 
 ---
 
-## What Brave Is
+## What QuantifyX Is
 
-Brave is a mobile-controlled automated trading bot for MetaTrader 5.
-Think of it like a VPN app — the user picks which strategy is active from their phone,
-and the bot executes that strategy automatically on their MT5 account.
+QuantifyX is an autonomous crypto trading agent that runs the **Frost** mean reversion strategy on Kraken spot markets.
 
-The bot runs on a local machine or VPS with MT5 installed.
-Firebase is the bridge between the mobile app and the bot.
-The mobile app never touches MT5 directly — it only reads/writes Firebase.
+It was originally built as **Brave** — an MT5 forex trading bot. The Frost strategy was ported from MT5/Forex to Kraken crypto by:
+- Replacing the MT5 data feed with Kraken's public OHLCV REST API
+- Replacing MT5 `order_send()` with `krakenex` REST API calls
+- Recalibrating pip/point thresholds from forex pips to crypto dollar units
+
+The core strategy logic (MA, ATR, trend detection, signal building) is **unchanged** from the original Frost implementation.
 
 ---
 
 ## Project Rules
 
 - Python only. Type hints enforced.
-- No credentials ever hardcoded — always imported from `config.py`
-- Comments only when necessary — explain *why*, never *what*
+- No credentials ever hardcoded — always use `.env` via `python-dotenv`
+- Comments explain *why*, never *what*
 - Every trade action must be logged
-- No strategy runs without defined SL, TP, and position sizing
+- No strategy runs without defined SL, TP, and RR
 - Update `README.md` when code changes
 - Update `CHECKLIST.md` when tasks complete
+- Always run one PowerShell command per line
 
 ---
 
 ## Repository Structure
 
 ```
-Brave/
-├── src/                      # Source code
-│   ├── bot.py                # Main bot — BraveBot class (v2.0)
-│   ├── thunder.py            # Thunder strategy — EMA Stack Scalper
-│   ├── flow.py               # Flow strategy — Trend Continuation
-│   ├── news_filter.py        # News filtering logic
-│   ├── sentiment_service.py  # AI Sentiment Analysis (GPT-4 + Grok)
-│   ├── manage_config.py      # CLI utility: update Firebase config
-│   ├── send_command.py       # CLI utility: start/stop bot
-│   └── setup_firebase.py     # One-time Firebase setup script
-├── backtest/                 # Backtesting engine
-│   ├── results/              # Generated — backtest CSV results
-│   ├── backtest_thunder.py   # Thunder backtester
-│   └── backtest_thunder.log  # Generated — backtest log
-├── config.py                 # Credentials + settings (NOT in repo)
-├── config.example.py         # Config template (safe to commit)
-├── serviceAccountKey.json    # Firebase service account (NOT in repo)
-├── data/                     # Generated — cached candle CSVs (ignored)
-├── logs/                     # Generated — daily bot logs (ignored)
-├── ARCHITECTURE.md           # This document
-├── RULES.md                  # Detailed project rules
-├── CHECKLIST.md              # Feature and maintenance tracking
-└── README.md                 # User guide and setup
+QuantifyX/
+├── src/
+│   ├── frost_kraken.py      # Frost strategy — Kraken port
+│   ├── executor.py          # Kraken order execution via krakenex
+│   ├── agent.py             # Main loop
+│   ├── firebase_logger.py   # Firebase signal/trade logging
+│   ├── manage_config.py     # Config manager utility
+│   └── setup_firebase.py    # One-time Firebase setup
+├── backtest/                # Backtesting scripts and CSV results
+├── brave-app/               # React Native mobile app (optional)
+├── logs/                    # Runtime logs (auto-generated)
+├── .env                     # API keys (never committed)
+├── config.py                # App config
+├── serviceAccountKey.json   # Firebase key (never committed)
+├── test_connection.py       # Kraken + PRISM connection test
+├── test_frost.py            # Full pipeline test (Frost + Executor)
+└── docs/                    # README, ARCHITECTURE, CHECKLIST etc.
 ```
 
 ---
@@ -62,284 +58,143 @@ Brave/
 | Layer | Technology |
 |---|---|
 | Language | Python 3.9+ |
-| Trading | MetaTrader5 Python library |
+| Trading Execution | Kraken REST API via `krakenex 2.2.2` |
+| Market Data (OHLCV) | Kraken public REST — `/0/public/OHLC` |
+| Market Data (Signals) | PRISM API — `api.prismapi.ai` |
 | Database | Firebase Realtime Database (`firebase-admin`) |
 | Math | NumPy |
-| Remote control | Firebase command queue |
-| Secrets | `config.py` + `serviceAccountKey.json` (never committed) |
-| Deployment | Local machine or VPS running MT5 terminal |
-| Mobile App | React Native + Expo SDK 52 |
-| Mobile Database | @react-native-firebase/database |
-| Mobile Navigation | @react-navigation/bottom-tabs |
-| Push Notifications | expo-notifications + Firebase Cloud Messaging |
-| Mobile Dev Tool | Expo Go (Android) |
+| Secrets | `.env` + `python-dotenv` |
+| Mobile App | React Native + Expo SDK (brave-app, optional) |
 
 ---
 
-## Core Concept: Strategy Registry
+## Data Flow
 
-`src/bot.py` has a `STRATEGY_REGISTRY` dict that maps strategy names to classes:
+```
+Kraken Public OHLCV API
+        ↓
+   frost_kraken.py
+   (MA, ATR, trend, deviation checks)
+        ↓
+   Signal dict or None
+        ↓
+   executor.py
+   (krakenex AddOrder)
+        ↓
+   Kraken Exchange
+        ↓
+   firebase_logger.py
+   (log to Firebase)
+```
+
+---
+
+## Frost Strategy (`src/frost_kraken.py`)
+
+**Origin:** Ported from `src/frost.py` (Brave MT5 bot)
+**Type:** Mean Reversion / Counter-Trend Scalping
+**Session:** Asian only — 00:00 to 06:00 UTC, no new entries after 05:30 UTC
+**Pairs:** XBTUSD, ETHUSD on Kraken
+
+### Logic (unchanged from original)
+1. Session filter — Asian session only
+2. Fetch M15 OHLCV candles from Kraken public API
+3. ATR range check — skip if market too volatile or too dead
+4. Calculate 20-period MA and price deviation
+5. Deviation threshold check — must be between MIN and MAX
+6. Trend filter — skip if linear regression slope too steep
+7. Generate mean reversion signal — fade price back toward MA
+
+### What Changed vs Original Frost
+| Component | Original (Brave/MT5) | QuantifyX (Kraken) |
+|---|---|---|
+| Data source | `mt5.copy_rates_from_pos()` | Kraken `/0/public/OHLC` |
+| Execution | `mt5.order_send()` | `krakenex.query_private('AddOrder')` |
+| Spread check | MT5 live tick | Removed (handled by Kraken) |
+| Point size | Forex pip (0.00001) | Crypto unit (BTC=0.1, ETH=0.01) |
+| Thresholds | Forex pips | Dollar units (recalibrated) |
+| Pairs | GBPUSD, USDCAD, EURCHF | XBTUSD, ETHUSD |
+
+### Recalibrated Thresholds (as of April 2026)
+```python
+MIN_DEVIATION_PIPS = 50.0    # $50 minimum deviation from MA
+MAX_DEVIATION_PIPS = 1000.0  # $1000 max deviation
+MAX_ATR_PIPS       = 600.0   # Skip if ATR > $600
+MIN_ATR_PIPS       = 10.0    # Skip if ATR < $10
+# Trend slope threshold: 100.0 units/candle
+# Validated from live data: current BTC slope ~70 during active market
+# Asian session slope expected to be lower (calmer conditions)
+```
+
+### What Stays Identical
+- `_calculate_ma()` — pure NumPy, no exchange dependency
+- `_calculate_atr()` — pure NumPy, no exchange dependency
+- `_is_trending()` — linear regression slope, no exchange dependency
+- `_is_asian_session()` — datetime only
+- `_is_safe_entry_time()` — datetime only
+- `_build_signal()` — pure math, signal dict shape unchanged
+
+---
+
+## Executor (`src/executor.py`)
+
+Wraps `krakenex` and translates signal dicts into Kraken REST API calls.
+
+**dry_run=True** — logs the order, does not send it. Use for testing.
+**dry_run=False** — live execution on Kraken.
 
 ```python
-STRATEGY_REGISTRY = {
-    "thunder": Thunder,
-    "flow": Flow,
+order_params = {
+    "pair":      "XBTUSD",
+    "type":      "buy",      # Kraken uses lowercase
+    "ordertype": "market",
+    "volume":    "0.001",
 }
-```
-
-Every loop cycle, `BraveBot._load_active_strategy()` reads
-`users/{USER_ID}/brave_config/active_strategy` from Firebase.
-If it changed since last loop, it hot-swaps the strategy instance — no restart needed.
-
-**To add a new strategy:**
-1. Create `src/newstrategy.py` with a class that has an `analyze(symbol, provided_rates) -> dict | None` method
-2. Import it at the top of `src/bot.py`
-3. Add `"newstrategy": NewStrategy` to `STRATEGY_REGISTRY`
-4. Mobile app can now switch to it by writing `"newstrategy"` to Firebase
-
----
-
-## Firebase Data Structure
-
-```
-users/
-  {USER_ID}/
-    brave_config/           ← Mobile app reads/writes this
-      active_strategy       string  e.g. "thunder"
-      available_strategies  array   e.g. ["thunder"]
-      last_switched         string  ISO timestamp
-      switched_by           string  "mobile" | "manual"
-
-    bot_config/             ← Trading parameters
-      lot_size              float   e.g. 0.1
-      max_trades            int     e.g. 3
-      stop_loss_pips        int     e.g. 50
-      take_profit_pips      int     e.g. 100
-      timeframe             string  e.g. "M15"
-      symbols               array   e.g. ["EURUSD", "GBPUSD", "XAUUSD"]
-
-    bot_status/             ← Bot writes this — mobile reads it
-      is_running            bool
-      active_strategy       string
-      balance               float
-      equity                float
-      profit                float
-      open_positions        int
-      market_open           bool
-      open_markets          array
-      markets_analyzed      array
-      trading_active        bool
-      paused_reason         string  "DAILY_LOSS_LIMIT" | null
-      pnl_at_pause          float   e.g. -500.25
-      last_started          string
-      last_stopped          string
-      last_updated          string
-      bot_version           string
-
-    commands/               ← Mobile writes this — bot listens
-      action                string  "start" | "stop"
-      timestamp             string  ISO timestamp
-
-    alerts/                 ← Bot pushes signals here — mobile reads
-      {push_id}/
-        symbol              string
-        direction           string  "BUY" | "SELL"
-        strategy_name       string
-        entry_price         float
-        suggested_sl        float
-        suggested_tp        float
-        risk_reward_ratio   float
-        alert_type          string
-        sent_at             string
-
-    health/                 ← Bot writes every 10 min
-      status                string  "HEALTHY" | "DEGRADED"
-      mt5_connected         bool
-      firebase_connected    bool
-      account_trade_allowed bool
-      balance               float
-      equity                float
-      market_status         object
-      symbols_available     object
-      timestamp             string
-
-    market_status/          ← Bot writes every 60s
-      overall_open          bool
-      all_closed            bool
-      status                object  {EURUSD: "OPEN", ...}
-      timestamp             string
-
-    trades/                 ← Bot writes on execution
-      {push_id}/
-        symbol, direction, entry, sl, tp, lot
-        ticket, strategy, verified, session, timestamp
-
-    sentiment/              ← SentimentService writes this
-      {symbol}/
-        direction_bias      string  "BULLISH" | "BEARISH" | "NEUTRAL"
-        score               float   -1.0 to 1.0
-        confidence          string  "HIGH" | "MEDIUM" | "LOW"
-        gpt4_summary        string  News summary
-        grok_summary        string  X/Social summary
-        risk_advisory       string  Plain-English warning
-        trade_alignment     string  "ALIGNED" | "OPPOSED"
-        updated_at          string  ISO timestamp
-```
-
----
-
-## BraveBot Main Loop (`src/bot.py`)
-
-```
-bot.run()
-  └── while True:
-        ├── if not is_running → sleep, wait for Firebase start command
-        ├── health_check() every 10 min
-        ├── _get_config() from Firebase
-        ├── _check_signals(config)
-        │     ├── _load_active_strategy()   ← reads brave_config, hot-swaps if changed
-        │     ├── Daily Loss Limiter        ← pauses bot if loss exceeds 5% of daily equity
-        │     ├── _select_pairs() every 1hr ← scores by spread + volatility
-        │     ├── _open_markets()           ← checks MT5 status
-        │     └── for each open pair:
-        │           ├── NewsFilter.is_safe_to_trade() ← skips during high-impact news
-        │           ├── _count_positions()            ← checks positions + pending orders
-        │           └── strategy.analyze(symbol)      → signal dict or None
-        │                 └── if signal: execute_signal() + push to Firebase
-        └── sleep CHECK_INTERVAL (60s)
+api.query_private("AddOrder", order_params)
 ```
 
 ---
 
 ## Strategy Contract
 
-Every strategy file MUST follow this interface exactly.
-`src/bot.py` calls nothing except `analyze()`.
+Every strategy must follow this interface. `agent.py` calls only `analyze()`.
 
 ```python
 class MyStrategy:
     def __init__(self, config: dict):
-        # config contains: lot_size, stop_loss_pips, take_profit_pips, etc.
         pass
 
     def analyze(self, symbol: str, provided_rates: dict | None = None) -> dict | None:
         """
-        Live mode:    provided_rates = None  → fetch from MT5
-        Backtest mode: provided_rates = {
-            mt5.TIMEFRAME_H4:  list[dict],
-            mt5.TIMEFRAME_M15: list[dict],
-        }
-
-        Returns signal dict if all conditions pass, else None.
+        Live mode:    provided_rates = None → fetch from Kraken
+        Backtest mode: provided_rates = {"M15": list[dict]}
+        Returns signal dict or None.
         """
         pass
 ```
 
-**Signal dict shape** (must include all these keys):
-
+**Signal dict shape:**
 ```python
 {
-    "symbol":            str,    # e.g. "EURUSD"
+    "symbol":            str,    # e.g. "XBTUSD"
     "direction":         str,    # "BUY" | "SELL"
-    "strategy_name":     str,    # e.g. "Thunder"
-    "order_type":        str,    # "MARKET" | "STOP" | "LIMIT"
+    "strategy_name":     str,    # e.g. "frost_kraken"
+    "order_type":        str,    # "MARKET"
     "entry_price":       float,
     "suggested_sl":      float,
     "suggested_tp":      float,
     "risk_reward_ratio": float,
-    "expected_profit":   float,
-    "expected_loss":     float,
-    "probability":       str,    # "HIGH" | "MEDIUM" | "LOW"
-    "structure":         dict,   # strategy-specific metadata
+    "volume":            float,  # BTC volume e.g. 0.001
+    "probability":       str,    # "HIGH" | "MEDIUM"
+    "structure":         dict,   # strategy metadata
 }
-```
-
----
-
-## Thunder Strategy (`src/thunder.py`)
-
-**Source:** ForexFactory thread #896811 — adapted for M15/H4 and ATR scaling
-
-**Pairs:** EURUSD, GBPUSD, XAUUSD, US30, NAS100
-
-**Logic:**
-1. H4 EMA 8/13/21 stack — must be strictly aligned (8>13>21 = BUY, 8<13<21 = SELL)
-2. ATR filter on M15 — skip if ATR < 3 pips (dead market)
-3. 5-candle breakout range on M15 — last 5 closed candles
-4. Entry: pending STOP ATR×0.3 above range high (BUY) or below range low (SELL)
-5. SL: opposite extreme of range + ATR×0.5 buffer
-6. TP: minimum 2:1 RR from entry
-7. Session filter: London 08:00–11:00 UTC + NY 13:00–16:00 UTC only
-
-**Key constants:**
-
-```python
-EMA_FAST   = 8
-EMA_MID    = 13
-EMA_SLOW   = 21
-RANGE_CANDLES      = 5      # 5-candle range definition
-ATR_PERIOD         = 14
-ATR_ENTRY_MULT     = 0.3    # Entry buffer
-ATR_SL_MULT        = 0.5    # SL buffer
-MIN_RR             = 2.0
-MIN_ATR_PIPS       = 3.0
-```
-
----
-
-## Backtester Contract (`backtest/backtest_thunder.py`)
-
-All backtester files follow this pattern:
-
-```
-fetch_data()          Chunked 10k candle fetching + CSV caching
-get_h4_context()      Binary search time-machine — no lookahead bias
-ThunderTradeSimulator Pending STOP orders, 1% risk sizing, pessimistic execution
-ThunderBacktester     Orchestrates time-machine + strategy.analyze() + simulator
-print_summary()       Win rate, profit factor, per-symbol, per-session, drawdown
-export_csv()          All trades to CSV
-main()                Entry point — loops over SYMBOLS
-```
-
-**Run from terminal:**
-```bash
-python backtest/backtest_thunder.py
-```
-
-**Pessimistic execution rule:** If SL and TP both hit on the same candle, SL wins.
-This is intentional — it's the conservative assumption.
-
-**Pending order expiry:** If a pending STOP order is not triggered within
-`MAX_CANDLES_WAIT` (100) candles, it expires and is recorded as `EXPIRED`.
-
----
-
-## Config File (`config.py`)
-
-```python
-# MT5
-MT5_LOGIN    = 12345678          # int
-MT5_PASSWORD = "yourpassword"    # str
-MT5_SERVER   = "RoboForex-Pro"   # str
-
-# Firebase
-FIREBASE_DATABASE_URL = "https://your-project.firebaseio.com"
-USER_ID = "RcB4T6930SVvE4Lt9mCSs6nbG1G2"
-
-# Trading defaults
-SYMBOLS          = ["EURUSD", "GBPUSD", "XAUUSD", "US30", "NAS100"]
-TIMEFRAME        = "M15"
-LOT_SIZE         = 0.1
-MAX_TRADES       = 3
-STOP_LOSS_PIPS   = 50
-TAKE_PROFIT_PIPS = 100
 ```
 
 ---
 
 ## Candle Dict Format
 
-All candles throughout the codebase use this exact shape:
+All candles throughout the codebase use this shape:
 
 ```python
 {
@@ -348,52 +203,116 @@ All candles throughout the codebase use this exact shape:
     "high":   float,
     "low":    float,
     "close":  float,
-    "volume": int,    # tick_volume from MT5
+    "volume": float,  # trade volume
 }
+```
+
+Kraken OHLC API returns: `[time, open, high, low, close, vwap, volume, count]`
+We map index 0→time, 1→open, 2→high, 3→low, 4→close, 6→volume.
+
+---
+
+## Kraken Pair Names
+
+Kraken uses non-standard pair names. Important ones:
+
+| Common Name | Kraken Name |
+|---|---|
+| BTC/USD | XBTUSD |
+| ETH/USD | ETHUSD |
+
+Always use Kraken's naming in API calls. XBTUSD not BTCUSD.
+
+---
+
+## Firebase Data Structure
+
+```
+quantifyx/
+  signals/
+    {push_id}/
+      symbol, direction, strategy_name
+      entry_price, suggested_sl, suggested_tp
+      risk_reward_ratio, volume, probability
+      timestamp
+
+  trades/
+    {push_id}/
+      symbol, direction, volume
+      txid, status, timestamp
+
+  status/
+    is_running        bool
+    last_updated      string
+    active_strategy   string
 ```
 
 ---
 
-## Pip Size Reference
+## Environment Variables (`.env`)
 
-```python
-POINT_SIZES = {
-    "EURUSD": 0.00001,   # 5-decimal FX
-    "GBPUSD": 0.00001,
-    "USDJPY": 0.001,     # 3-decimal JPY pairs
-    "XAUUSD": 0.01,      # Gold
-    "US30":   0.01,      # Indices
-    "NAS100": 0.01,
-}
+```
+KRAKEN_API_KEY=         # QuantifyX-Agent trading key
+KRAKEN_API_SECRET=      # QuantifyX-Agent trading secret
+PRISM_API_KEY=          # PRISM market data key
 ```
 
----
-
-## Known Constraints
-
-- MT5 must be running and logged in on the same machine as the bot
-- Firebase free tier — no cost but has rate limits (not an issue at current scale)
-- Geographic latency from Lusaka to Firebase region adds ~150–300ms to Firebase calls
-  (not a problem for a 60-second loop bot)
-- Windows PowerShell is the dev environment — all scripts are tested there
-- `data/` CSV cache: delete a file to force a fresh MT5 fetch on next backtest run
+Never commit `.env`. It is in `.gitignore`.
 
 ---
 
-## What Does NOT Exist Yet
+## Kraken API Keys
 
-- Mobile app screens (Phase 3 in progress) — project scaffolded, screens being built
-- Ringer strategy — not started
-- Second scalping strategy for Brave bundle — pending Thunder backtest results
-- Auto-restart on crash — needs systemd or equivalent for production VPS
+Two keys are required:
+
+**QuantifyX-Agent** (used by the bot)
+- Query Funds ✅
+- Query Open Orders & Trades ✅
+- Query Closed Orders & Trades ✅
+- Create & Modify Orders ✅
+- Cancel & Close Orders ✅
+- Withdraw ❌ never
+
+**QuantifyX-Leaderboard** (submitted to lablab.ai)
+- Query Funds ✅
+- Query Open Orders & Trades ✅
+- Everything else ❌
 
 ---
 
-## Adding a Second Strategy (Future)
+## Known Constraints and Issues
 
-1. Create `src/newstrategy.py` with `class NewStrategy`
-2. Must follow the Strategy Contract above — `__init__(config)` + `analyze(symbol, provided_rates)`
-3. In `src/bot.py`: `from newstrategy import NewStrategy` and add `"newstrategy": NewStrategy` to `STRATEGY_REGISTRY`
-4. In `backtest/`: create `backtest_newstrategy.py` following the same backtester pattern
-5. Update `brave_config/available_strategies` in Firebase to include `"newstrategy"`
-6. Mobile app can now offer NewStrategy as a switchable option
+- Kraken CLI binary is Linux/Mac only — no Windows binary in v0.3.0.
+  QuantifyX uses `krakenex` (Python REST wrapper) instead.
+  This covers 100% of required functionality.
+
+- Git Bash on Windows cannot execute Linux ELF binaries even with the
+  `.tar.gz` extracted. Do not attempt to run the Kraken CLI binary on Windows
+  without WSL or a Linux machine.
+
+- WSL on company laptops is risky — IT policy may prohibit it.
+  Stick with `krakenex` on Windows.
+
+- The `.venv` path must be explicit when running scripts in PowerShell
+  because the activated venv sometimes resolves to an older Brave venv.
+  Always use the full path:
+  `& "...\QuantifyX\.venv\Scripts\python.exe" script.py`
+
+- Frost session filter blocks signals outside 00:00–06:00 UTC.
+  For testing during the day, pass candles directly:
+  `f.analyze('XBTUSD', provided_rates={'M15': candles})`
+
+- BTC ATR during active trading hours is $400–600.
+  MAX_ATR_PIPS set to 600.0 to accommodate this.
+  During Asian session it drops to $200–350 — natural filter.
+
+- BTC trend slope during active hours: ~70 units/candle observed.
+  Threshold set to 100.0. Asian session slope expected lower.
+  Recalibrate if too many false trending rejections occur overnight.
+
+- Kraken balance returns empty dict `{}` if account has no funds.
+  This is normal — not an API error.
+
+- python-dotenv must be installed into the correct venv.
+  If `ModuleNotFoundError: No module named 'dotenv'` appears,
+  run: `& "...\QuantifyX\.venv\Scripts\python.exe" -m pip install python-dotenv`

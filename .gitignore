@@ -1,4 +1,5 @@
 # Sensitive files - NEVER commit these!
+.env
 serviceAccountKey.json
 config.py
 

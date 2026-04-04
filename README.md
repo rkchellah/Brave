@@ -17,8 +17,8 @@ Automated trading bot for MetaTrader 5 focused on the **Flow** trend continuatio
 - ✅ Comprehensive Logging
 - ✅ Thunder Strategy (EMA Stack Scalper)
 - ✅ Flow Strategy (fxalexg Trend Continuation)
-- ✅ Project Rules enforced (see [RULES.md](file:///c:/Users/ECSZMLPT0067/Downloads/Back%20Up Files/Softs/SeoTools Back Up Files/bin/Projects/ME/Something Files/Projects/Brave/RULES.md))
-- ✅ Architecture Document (see [ARCHITECTURE.md](file:///c:/Users/ECSZMLPT0067/Downloads/Back%20Up Files/Softs/SeoTools Back Up Files/bin/Projects/ME/Something Files/Projects/Brave/ARCHITECTURE.md))
+- ✅ Project Rules enforced (see [RULES.md](RULES.md))
+- ✅ Architecture Document (see [ARCHITECTURE.md](ARCHITECTURE.md))
 
 ## Setup
 

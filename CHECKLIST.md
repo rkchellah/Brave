@@ -1,159 +1,134 @@
-# Brave — Project Checklist
+# QuantifyX — Project Checklist
 
-## Phase 1 — Core Infrastructure ✅ COMPLETE
-- [x] MT5 connection + login
-- [x] Firebase Realtime Database integration
-- [x] Command listener (start/stop from mobile/terminal)
-- [x] Health check (MT5 + Firebase + account status)
-- [x] Market status tracking per symbol
-- [x] Dynamic pair selection (spread + volatility scoring)
-- [x] Trade logging to Firebase
-- [x] Alert push to Firebase on signal
-- [x] config.py credential management (never committed)
-- [x] Bot status pushed to Firebase every cycle
+## Phase 0 — Environment Setup ✅ COMPLETE
 
----
-
-## Phase 2 — Thunder Strategy + Stability ✅ COMPLETE
-
-### Thunder Strategy
-- [x] `thunder.py` — EMA 8/13/21 stack, ATR-scaled, M15/H4
-- [x] `backtest_thunder.py` — full backtester with CSV cache + reporting
-- [x] Backtest validated — 273% return, 1.16 profit factor, 32.4% win rate
-- [x] Thunder wired into live `bot.py` via strategy registry
-- [x] Flow strategy wired into bot.py via strategy registry
-- [x] Live demo test confirmed — trades executing on MT5
-- [x] Frost strategy (Asian session mean reversion) — backtest validated
-      64.5% win rate | 1.64 profit factor | +79.3% return | 5.8% max drawdown
-      Pairs: GBPUSD, USDCAD, EURCHF | 527 trades over 17 months
-
-### Phase 2 Bug Fixes + Stability
-- [x] `firebase_enabled` AttributeError fixed — attribute now set first in `__init__`
-- [x] **Soft Session Filter added** — Brave trades 24/7 but tags trades with LONDON/NEW_YORK/OTHER for analysis
-- [x] **Duplicate order bug fixed** — `_count_positions()` now counts pending STOP
-      orders AND active positions (was only counting active positions before,
-      causing the same signal to stack 10+ orders per hour)
-- [x] **Log rotation added** — `TimedRotatingFileHandler`, daily files, 7 days kept
-- [x] **News filter added** — `news_filter.py` pauses trading ±30 min around
-      high-impact ForexFactory events per symbol's currencies
-- [x] Firebase SSE timeout downgraded to DEBUG — no longer spams logs
-- [x] **Firebase init bug fixed** — `firebase_enabled` flag now set immediately after connection to ensure initial status push isn't skipped.
-- [x] **MT5 Terminal check added** — bot now detects if "Algo Trading" button is OFF in MT5 and logs a critical error.
-- [x] **Daily Loss Limiter (Kill Switch) added** — pauses bot if daily loss exceeds 5%
-- [x] **XAUUSD SL/TP dropped bug fixed** — `bot.py` now precisely rounds Entry, SL, and TP to `info.digits` for each symbol to prevent MT5 from silently stripping invalid decimals on metals/indices.
-- [x] **AI Sentiment Service added** — `sentiment_service.py` uses GPT-4 and Grok-3 to analysis market sentiment and push to Firebase.
-- [x] **Fix 1: Thunder Import** — Corrected `Thunder` class import and registry reference in `bot.py`.
-- [x] **Fix 2: Active Strategy tracking** — `active_strategy_name` now properly persists in `bot.py` for status updates.
-- [x] **Fix 3: Session Equity Guard** — Added `None` check for `_session_start_equity` to prevent crashes during loss limit calculations.
-- [x] **Fix 4: Firebase Singleton Fix** — Updated `SentimentService` to accept an `existing_db` flag, preventing "App already exists" crashes when running inside `bot.py`.
-
-### Known Remaining Issues
-- [ ] US30/NAS100 returning no data from broker (broker may not support indices on demo)
-- [x] USDJPY appearing in pair selection — excluded until backtested
+- [x] Project folder created: `QuantifyX` (renamed from `Brave_Agent`)
+- [x] Python venv created: `.venv`
+- [x] `krakenex 2.2.2` installed into correct venv
+- [x] `python-dotenv 1.2.2` installed into correct venv
+- [x] `numpy` installed
+- [x] `requests` installed
+- [x] `.env` file created with all three API keys
+- [x] `.gitignore` configured — `.env`, `serviceAccountKey.json`, `logs/`, `__pycache__/` excluded
+- [x] Junk files deleted — old logs, pycache, irrelevant Brave files removed
 
 ---
 
-## Phase 3 — Mobile App 🔄 IN PROGRESS
+## Phase 1 — Kraken Connection ✅ COMPLETE
 
-### Setup Complete
-- [x] Stack chosen: React Native with Expo SDK 52
-- [x] Expo CLI + EAS CLI installed globally
-- [x] `brave-app` project scaffolded with `create-expo-app`
-- [x] Firebase packages installed (`@react-native-firebase/app`, `@react-native-firebase/database`)
-- [x] Navigation installed (`@react-navigation/native`, `@react-navigation/bottom-tabs`)
-- [x] `expo-notifications` installed
-- [x] App running live on physical Android device via Expo Go (SDK 52)
-
-### ⚠️ Setup Challenge — Expo SDK Version Mismatch
-**Problem:** After scaffolding with `create-expo-app`, scanning the QR code on the
-physical device returned: *"Project is incompatible with this version of Expo Go."*
-
-**Root cause:** Initial tests with SDK 54/55 (latest) revealed that the user's Expo Go version was older.
-**What fixed it:** Downgraded the project to **SDK 52** for maximum compatibility:
-```bash
-cd brave-app
-npm install --legacy-peer-deps
-npx expo start --clear
-```
-App loaded on device showing: "Open up App.js to start working on your app!"
-Lesson for future devs: Match the project SDK to the device SDK (52 is currently the safest bet for stability).
-### Screens To Build
-- [x] Dashboard — balance, equity, P&L, bot status, start/stop button
-- [x] Signals — pending signals with Confirm/Reject (Human-in-the-Loop)
-- [x] AI Insights — sentiment scores for EURUSD, GBPUSD, XAUUSD
-- [x] Alerts — trade history feed
-- [x] Settings — execution mode AUTO/MANUAL, strategy switcher
-
-### Human-in-the-Loop (HITL) Architecture
-- [x] Execution mode designed — AUTO and MANUAL
-- [x] Firebase schema extended — `brave_config/execution_mode`
-- [x] `config.py` updated — `EXECUTION_MODE = "AUTO"`, `SIGNAL_EXPIRY_SECONDS = 180`
-- [x] `bot.py` — execution mode gate added to `execute_signal()`
-- [x] `bot.py` — MANUAL mode pushes pending signal to Firebase and waits
-- [x] `bot.py` — 3-minute expiry logic for MANUAL signals
-- [x] Mobile app — AUTO/MANUAL toggle on Dashboard
-- [x] Mobile app — Signals screen with Confirm/Reject buttons
-- [ ] Push notifications via Firebase Cloud Messaging (FCM)
-
-### Mobile App Setup Challenges Log
-- [x] **SDK mismatch** — `create-expo-app@latest` scaffolds SDK 55, phone has SDK 54.
-      Fix: manually replace `package.json` with all versions locked to SDK 54
-      before running `npm install --legacy-peer-deps`
-- [x] **PlatformConstants red screen** — caused by `react-native-screens` versions
-      above 3.34.0 using TurboModules not supported in Expo Go SDK 54.
-      Fix: lock `react-native-screens` to exactly `3.34.0` in `package.json`
-- [x] **Windows path length error** — `node_modules` nesting exceeds Windows 260-char
-      limit. Fix: enable long paths via registry
-      `HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem LongPathsEnabled = 1`
-- [x] **PowerShell multiline paste** — commands merge into one line e.g.
-      `cd brave-appnpm install`. Fix: always paste one command per line in PowerShell
-- [x] **VPN interference** — Proton VPN on phone blocks local network connection to
-      Metro bundler. Fix: disable VPN on phone before scanning QR code
-- [x] **`@react-native-firebase` incompatible with Expo Go** — native packages require
-      a compiled APK build. Fix: uninstall and use JS Firebase SDK (`firebase@10.14.1`)
-- [x] **npm version drift** — each `npm install` pulls newer incompatible versions.
-      Fix: lock all versions in `package.json` before any install
-- [x] **Firebase Permission denied** — app showed $0.00 because Firebase rules
-      were set to deny public reads. Fix: set rules to `.read: true, .write: true`
-      for development. Tighten with auth rules before live account.
-- [x] **React Native Upgrade** — Upgraded `react-native` to `0.79.2` and triggered a new Android preview build.
-
-### send_command.py Status
-- [ ] Verify `send_command.py start` triggers bot correctly via Firebase listener
-- [ ] Verify `send_command.py stop` halts bot correctly via Firebase listener
-- [ ] Document any observed latency between command and bot response
+- [x] Kraken account created
+- [x] **QuantifyX-Agent** API key generated
+      Permissions: Query Funds, Query Open/Closed Orders, Create & Modify Orders, Cancel & Close Orders
+- [x] **QuantifyX-Leaderboard** API key generated (read-only, for lablab.ai submission)
+- [x] `test_connection.py` created and validated
+- [x] Public API test passed — BTC price fetching at $66,920
+- [x] Private API test passed — Balance endpoint responding (empty, no funds yet)
+- [x] PRISM API key generated and added to `.env`
+- [x] PRISM `/resolve/BTC` endpoint tested and confirmed working
+- [ ] Deposit funds into Kraken account for live trading
+- [ ] Submit QuantifyX-Leaderboard read-only key to lablab.ai
 
 ---
 
-## Phase 4 — Production Hardening ❌ NOT STARTED
-- [ ] VPS setup (Windows VPS with MT5 terminal pre-installed)
-- [ ] Auto-restart on crash (Task Scheduler or NSSM service wrapper)
-- [x] Kill switch — auto-stop if drawdown exceeds 5% in a daily session
-- [ ] Second strategy for Brave bundle (pending decision after more demo data)
-- [ ] Live account migration checklist
+## Phase 2 — Frost Strategy Port ✅ COMPLETE
+
+- [x] `src/frost_kraken.py` created — Frost ported from MT5 to Kraken
+- [x] MT5 `copy_rates_from_pos()` replaced with Kraken `/0/public/OHLC` endpoint
+- [x] MT5 `symbol_info()` removed — point sizes hardcoded per crypto pair
+- [x] MT5 `symbol_info_tick()` spread check removed — not needed on Kraken
+- [x] Core indicators unchanged — `_calculate_ma()`, `_calculate_atr()`, `_is_trending()`
+- [x] Thresholds recalibrated for BTC dollar units (not forex pips)
+      MAX_ATR_PIPS: 300 → 600 (BTC ATR observed at $478–543 during active hours)
+      MAX_DEVIATION_PIPS: 500 → 1000 (BTC deviation observed at $531–777)
+      Trend slope threshold: 5 → 100 (BTC slope observed at ~70 units/candle)
+- [x] Candle fetch test passed — 50 M15 candles fetched, latest close confirmed
+- [x] Full analysis test passed — signal generated in backtest mode
+      SELL signal: Entry $66,918 | SL $66,972 | TP $66,875 | RR 0.79 | Probability HIGH
+- [x] Session filter confirmed working — correctly blocks signals outside Asian session
 
 ---
 
-## Backtest Results (Thunder — 3 pairs, ~10,000 H4 candles each)
+## Phase 3 — Execution Layer ✅ COMPLETE
 
-| Metric           | Result        |
-|------------------|---------------|
-| Total trades     | 4,249         |
-| Win rate         | 32.4%         |
-| Profit factor    | 1.16          |
-| Total P&L        | +$820.97      |
-| Total return     | +273.66%      |
-| Max drawdown     | 21.12%        |
-| Best pair        | GBPUSD (+342) |
-| Best session     | NY (+$506)    |
-
-Note: US30 and NAS100 returned no data during backtest (broker limitation on demo).
-Backtest was run on EURUSD, GBPUSD, XAUUSD only.
+- [x] `src/executor.py` created
+- [x] `dry_run=True` mode implemented and tested
+- [x] Full pipeline test passed:
+      Frost signal → Executor → Dry run order confirmed
+      BUY 0.001 XBTUSD @ market | SL $66,831 | TP $66,858 | RR 0.75
+- [ ] Live execution test — switch `dry_run=False` after depositing funds
+- [ ] Verify order appears in Kraken open orders
+- [ ] Verify order fills and appears in trade history
 
 ---
 
-## Immediate Next Steps
-1. Watch demo account for 2 weeks — do NOT change Thunder parameters during this period
-2. Log real win rate vs backtest win rate — expect some divergence, that is normal
-3. Decide on second strategy for Brave bundle based on demo observations
-4. [x] Fix pair selection to exclude USDJPY until it is backtested on Thunder
+## Phase 4 — Main Agent Loop ⬜ NOT STARTED
+
+- [ ] `src/agent.py` created — runs Frost every 15 minutes
+- [ ] Loop runs during Asian session only (00:00–06:00 UTC)
+- [ ] Graceful shutdown on keyboard interrupt
+- [ ] Error handling — API failures do not crash the loop
+- [ ] Agent tested overnight during Asian session
+
+---
+
+## Phase 5 — Firebase Logging ⬜ NOT STARTED
+
+- [ ] `src/firebase_logger.py` created
+- [ ] Signal pushed to Firebase on every signal generated
+- [ ] Trade pushed to Firebase on every execution
+- [ ] Status updated every loop cycle
+- [ ] Firebase Console shows live data
+
+---
+
+## Phase 6 — Hackathon Submission ⬜ NOT STARTED
+
+- [ ] Surge project registration completed at early.surge.xyz
+- [ ] Multi-sig wallet set up for prize receiving
+- [ ] QuantifyX-Leaderboard read-only key submitted to lablab.ai
+- [ ] GitHub repo made public
+- [ ] Demo video recorded
+      Must show: agent analyzing market → signal generated → order placed on Kraken
+- [ ] Devpost submission completed:
+      - [ ] Project title and description
+      - [ ] Cover image
+      - [ ] Video presentation
+      - [ ] Slide presentation
+      - [ ] GitHub repo link
+      - [ ] Tech tags
+- [ ] Social posts published and tagged:
+      @krakenfx @lablabai @Surgexyz_
+
+---
+
+## Known Issues Log
+
+| Date | Issue | Status | Fix |
+|---|---|---|---|
+| Apr 3 2026 | Kraken CLI has no Windows binary in v0.3.0 | Resolved | Switched to krakenex Python library |
+| Apr 3 2026 | Git Bash cannot execute Linux ELF binary | Resolved | krakenex used instead |
+| Apr 3 2026 | python-dotenv installed into wrong venv (old Brave venv) | Resolved | Used explicit python.exe path to install |
+| Apr 3 2026 | krakenex installed into wrong venv initially | Resolved | Used explicit python.exe path to install |
+| Apr 3 2026 | MAX_ATR_PIPS 300 too tight for BTC | Resolved | Raised to 600 based on observed ATR $478–543 |
+| Apr 3 2026 | MAX_DEVIATION_PIPS 500 too tight for BTC | Resolved | Raised to 1000 based on observed deviation $531–777 |
+| Apr 3 2026 | Trend slope threshold 5 too tight for BTC | Resolved | Raised to 100 based on observed slope ~70 |
+| Apr 3 2026 | Private API balance returns empty dict | Not a bug | Expected — account has no funds yet |
+
+---
+
+## Backtest Results (Frost — Original Forex Validation)
+
+These results are from the original Brave Frost backtest on forex pairs.
+The Kraken port inherits the same core logic.
+
+| Metric | Result |
+|---|---|
+| Pairs | GBPUSD, USDCAD, EURCHF |
+| Total trades | 527 |
+| Win rate | 64.5% |
+| Profit factor | 1.64 |
+| Total return | +79.3% |
+| Max drawdown | 5.8% |
+| Period | 17 months |
+
+Crypto-specific backtest on XBTUSD/ETHUSD — pending.

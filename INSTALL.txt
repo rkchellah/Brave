@@ -1,115 +1,219 @@
-================================================================================
-                    MT5 TRADING BOT - INSTALLATION GUIDE
-================================================================================
+# QuantifyX — Installation Guide
 
-STEP 1: DOWNLOAD ALL FILES
----------------------------
-Download ALL these files to the SAME folder:
+---
 
-✓ config.py                      (Your configuration file)
-✓ mt5_handler.py                 (MT5 connection handler)
-✓ market_structure.py            (Market structure analyser)
-✓ fvg_detector.py               (Fair value gap detector)
-✓ supply_demand.py              (Supply/demand zone detector)
-✓ quick_test.py                 (Connection test script)
-✓ test_data_gathering_v2.py     (Main analysis script)
-✓ check_files.py                (File checker)
-✓ INSTALL.txt                   (This file)
+## Prerequisites
 
+- Python 3.9+
+- Git
+- Windows PowerShell (dev environment)
+- Kraken account (kraken.com)
+- PRISM account (prismapi.ai)
+- Firebase account (console.firebase.google.com)
 
-STEP 2: INSTALL REQUIRED PACKAGES
-----------------------------------
-Open Command Prompt (cmd) or PowerShell in your project folder and run:
+---
 
-    pip install MetaTrader5 pandas numpy
+## Step 1 — Clone the Repository
 
+```powershell
+git clone https://github.com/rkchellah/QuantifyX.git
+cd QuantifyX
+```
 
-STEP 3: UPDATE CONFIG.PY
--------------------------
-Edit config.py and set your MT5 credentials:
+---
 
-    MT5_LOGIN = YOUR_LOGIN_NUMBER
-    MT5_PASSWORD = "YOUR_PASSWORD"
-    MT5_SERVER = "YOUR_BROKER_SERVER"
+## Step 2 — Create Virtual Environment
 
+```powershell
+python -m venv .venv
+```
 
-STEP 4: VERIFY INSTALLATION
-----------------------------
-Run the file checker:
+Activate it:
 
-    python check_files.py
+```powershell
+& ".\\.venv\\Scripts\\Activate.ps1"
+```
 
-This will confirm all files are present.
+You should see `(.venv)` at the start of your prompt.
 
+**Important:** Always use the explicit python path when running scripts to avoid
+resolving to a wrong venv:
 
-STEP 5: TEST CONNECTION
-------------------------
-Run the quick test:
+```powershell
+& ".\.venv\Scripts\python.exe" your_script.py
+```
 
-    python quick_test.py
+---
 
-This verifies MT5 connection and data retrieval.
+## Step 3 — Install Dependencies
 
+Always install using the explicit python path:
 
-STEP 6: RUN MARKET ANALYSIS
-----------------------------
-Run the full analysis:
+```powershell
+& ".\.venv\Scripts\python.exe" -m pip install krakenex python-dotenv numpy requests firebase-admin
+```
 
-    python test_data_gathering_v2.py
+Verify:
 
-This analyzes all your symbols for trading opportunities.
+```powershell
+& ".\.venv\Scripts\python.exe" -c "import krakenex; print('krakenex ready')"
+```
 
+---
 
-================================================================================
-                              TROUBLESHOOTING
-================================================================================
+## Step 4 — Get API Keys
 
-ERROR: "No module named 'MetaTrader5'"
-SOLUTION: Run: pip install MetaTrader5
+### Kraken
 
-ERROR: "No module named 'mt5_handler'"
-SOLUTION: Make sure all .py files are in the same folder
+1. Log into kraken.com
+2. Go to Security → API → Add Key
+3. Create **QuantifyX-Agent** key with these permissions:
+   - ✅ Query Funds
+   - ✅ Query Open Orders & Trades
+   - ✅ Query Closed Orders & Trades
+   - ✅ Create & Modify Orders
+   - ✅ Cancel & Close Orders
+   - ❌ Withdraw (never)
+4. Create **QuantifyX-Leaderboard** key (read-only):
+   - ✅ Query Funds
+   - ✅ Query Open Orders & Trades
+   - ❌ Everything else
+5. Copy both keys immediately — the secret is only shown once
 
-ERROR: "MT5 initialization failed"
-SOLUTION: 
-  1. Make sure MT5 terminal is running
-  2. Check your login credentials in config.py
-  3. Verify your broker server name
+### PRISM
 
-ERROR: "Failed to get bars"
-SOLUTION:
-  1. Check symbol names (they're case-sensitive)
-  2. Verify symbols are available on your broker
-  3. Try a different timeframe
+1. Sign up at prismapi.ai
+2. Redeem code: `LABLAB` (gives $10 free credits)
+3. Create API key — starts with `prism_sk_`
 
-================================================================================
-                           TRADING WORKFLOW
-================================================================================
+### Firebase
 
-DAILY ROUTINE:
-1. Run: python quick_test.py             (verify connection)
-2. Run: python test_data_gathering_v2.py  (find opportunities)
-3. Manually verify setups on MT5 charts
-4. Place trades manually in MT5 (for now)
+1. Go to console.firebase.google.com
+2. Create project `quantifyx`
+3. Enable Realtime Database
+4. Go to Project Settings → Service Accounts → Generate New Private Key
+5. Save as `serviceAccountKey.json` in the project root
 
-REMEMBER:
-- This is a DEMO account - test thoroughly!
-- Always verify signals manually before trading
-- Start with minimum lot sizes
-- Never risk more than 1-2% per trade
+---
 
-================================================================================
-                              NEED HELP?
-================================================================================
+## Step 5 — Configure Environment
 
-Common file locations:
-- Windows: C:\Users\YourName\Documents\mt5-trading-bot\
-- Config file should be in the same folder as the scripts
+Create `.env` in the project root:
 
-Make sure:
-✓ All files are in ONE folder
-✓ MT5 terminal is installed and running
-✓ You have an active demo or live account
-✓ Python 3.7+ is installed
+```
+KRAKEN_API_KEY=your_quantifyx_agent_key_here
+KRAKEN_API_SECRET=your_quantifyx_agent_secret_here
+PRISM_API_KEY=your_prism_key_here
+```
 
-================================================================================
+Never commit this file. It is already in `.gitignore`.
+
+---
+
+## Step 6 — Setup Firebase
+
+```powershell
+& ".\.venv\Scripts\python.exe" src/setup_firebase.py
+```
+
+---
+
+## Step 7 — Test Connection
+
+```powershell
+& ".\.venv\Scripts\python.exe" test_connection.py
+```
+
+Expected output:
+```
+BTC price: 66920.00000
+Balance: {'error': [], 'result': {}}
+```
+
+Balance will be empty if no funds are deposited — this is normal.
+
+---
+
+## Step 8 — Test Frost Pipeline
+
+```powershell
+& ".\.venv\Scripts\python.exe" test_frost.py
+```
+
+Expected output (during Asian session):
+```
+INFO: Frost loaded — crypto mean reversion (Kraken)
+INFO: Candles fetched: 50
+INFO: Latest close: 66920.0
+INFO: [XBTUSD] Frost: BUY | Entry=... SL=... TP=... RR=...
+Signal: BUY | RR: 0.75
+Execution result: dry_run
+```
+
+Outside Asian session it will log: `Outside Asian session — skipping`
+This is correct behavior. Use backtest mode to test outside session hours.
+
+---
+
+## Step 9 — Run the Agent
+
+```powershell
+& ".\.venv\Scripts\python.exe" src/agent.py
+```
+
+The agent runs every 15 minutes. It will only generate signals during Asian session (00:00–06:00 UTC).
+
+---
+
+## Troubleshooting
+
+**`ModuleNotFoundError: No module named 'krakenex'`**
+The package installed into the wrong venv. Fix:
+```powershell
+& ".\.venv\Scripts\python.exe" -m pip install krakenex
+```
+
+**`ModuleNotFoundError: No module named 'dotenv'`**
+Same issue. Fix:
+```powershell
+& ".\.venv\Scripts\python.exe" -m pip install python-dotenv
+```
+
+**`Exception: Either key or secret is not set`**
+Your `.env` file is empty or the keys are not filled in.
+Check: `Get-Content .env`
+Open and paste your actual keys: `code .env`
+
+**`No signal — Outside Asian session`**
+This is correct behavior. Frost only trades 00:00–06:00 UTC.
+To test during the day, use backtest mode in `test_frost.py`:
+```python
+signal = f.analyze('XBTUSD', provided_rates={'M15': candles})
+```
+
+**`ATR too high — volatile`**
+BTC is moving too fast right now. The agent will trade when ATR drops during
+the calm Asian session. No action needed.
+
+**`Kraken CLI install fails on Windows`**
+Kraken CLI v0.3.0 has no Windows binary. QuantifyX uses `krakenex` instead.
+Do not attempt to install the CLI on Windows. See ARCHITECTURE.md for details.
+
+**`sh is not recognized`**
+You are using PowerShell. The Kraken CLI install script requires bash.
+QuantifyX does not use Kraken CLI — ignore this.
+
+**PowerShell venv activation error**
+If activation fails, run this once to allow scripts:
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+---
+
+## Notes on Company Laptop
+
+- Do not install WSL on a company laptop without IT approval
+- Do not enable developer mode without IT approval
+- `krakenex` works entirely within Python — no system-level changes needed
+- All API calls are outbound HTTPS — no firewall issues expected
