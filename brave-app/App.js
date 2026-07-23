@@ -9,9 +9,12 @@ import {
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { initializeApp, getApps } from 'firebase/app';
 import { getDatabase, ref, onValue, set, update } from 'firebase/database';
-import { FlashList } from '@shopify/flash-list';
-import { StatusBar } from 'expo-status-bar';
 
+if (typeof ErrorUtils !== 'undefined') {
+  ErrorUtils.setGlobalHandler((error, isFatal) => {
+    console.log('GLOBAL ERROR:', error?.message, error?.stack);
+  });
+}
 
 // ── Firebase config ────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -672,6 +675,7 @@ const SettingsScreen = memo(function SettingsScreen() {
 // TAB NAVIGATOR
 // ════════════════════════════════════════════════════════════════════
 export default function App() {
+  try { } catch(e) { }
   const [dbReady, setDbReady] = useState(false);
 
   useEffect(() => {
@@ -701,9 +705,7 @@ export default function App() {
               paddingBottom: 0,
               elevation: 10,
               shadowColor: '#000',
-              shadowOffset: { width: 0, height: 10 },
-              shadowOpacity: 0.6,
-              shadowRadius: 10,
+              elevation: 10,
             },
             tabBarActiveTintColor: C.tabActive,
             tabBarInactiveTintColor: C.tabInactive,
@@ -729,7 +731,7 @@ export default function App() {
                       backgroundColor: '#FFF', borderRadius: 2
                     }} />
                   )}
-                  <MaterialCommunityIcons name={iconName} size={28} color={color} style={{ opacity: focused ? 1 : 0.8, marginBottom: 4 }} />
+                  <MaterialCommunityIcons name={iconName || 'help'} size={28} color={color || '#fff'} style={{ opacity: focused ? 1 : 0.8, marginBottom: 4 }} />
                 </View>
               );
             },
