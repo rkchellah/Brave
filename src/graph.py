@@ -200,7 +200,7 @@ def node_execute(state: BraveState) -> BraveState:
         result = mt5.order_send(request)
 
         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-            logging.info(f"[EXECUTE] ✅ Order placed — ticket {result.order}")
+            logging.info(f"[EXECUTE]  Order placed — ticket {result.order}")
             alerts_ref = fb.get("alerts_ref")
             if alerts_ref:
                 alerts_ref.push({
@@ -213,7 +213,7 @@ def node_execute(state: BraveState) -> BraveState:
                 })
         else:
             code = result.retcode if result else "unknown"
-            logging.error(f"[EXECUTE] ❌ Order failed — retcode {code}")
+            logging.error(f"[EXECUTE]  Order failed — retcode {code}")
 
     except Exception as e:
         logging.error(f"[EXECUTE] Error: {e}")
