@@ -237,7 +237,6 @@ const DashboardScreen = memo(function DashboardScreen() {
 
   return (
     <View style={[s.safe, { paddingTop: Platform.OS === 'android' ? 0 : 20 }]}>
-      <StatusBar style="light" translucent={true} backgroundColor="transparent" />
       <ScrollView
         style={s.screen} contentContainerStyle={s.scrollDash}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.warning} />}
@@ -385,19 +384,20 @@ const SignalsScreen = memo(function SignalsScreen() {
 
   return (
     <View style={[s.safe, { paddingTop: Platform.OS === 'android' ? 0 : 20 }]}>
-      <StatusBar style="light" translucent={true} backgroundColor="transparent" />
       <View style={s.screen}>
         {data.length === 0 ? (
           <Text style={{ color: C.secondary, textAlign: 'center', marginTop: 50 }}>No pending signals or history.</Text>
         ) : (
-          <FlashList
-            data={data}
-            renderItem={renderItem}
-            keyExtractor={item => item[0]}
-            estimatedItemSize={100}
+          <ScrollView
             contentContainerStyle={[s.scrollList, { paddingBottom: 100 }]}
             showsVerticalScrollIndicator={false}
-          />
+          >
+            {data.map((item) => (
+              <React.Fragment key={item[0]}>
+                {renderItem({ item })}
+              </React.Fragment>
+            ))}
+          </ScrollView>
         )}
       </View>
     </View>
@@ -425,7 +425,6 @@ const InsightsScreen = memo(function InsightsScreen() {
 
   return (
     <View style={[s.safe, { paddingTop: Platform.OS === 'android' ? 0 : 20 }]}>
-      <StatusBar style="light" translucent={true} backgroundColor="transparent" />
       <ScrollView style={s.screen} contentContainerStyle={[s.scrollList, { paddingBottom: 100 }]}>
         {PAIRS.map((pair, i) => {
           const data = sentiment[pair] || {};
@@ -540,16 +539,17 @@ const AlertsScreen = memo(function AlertsScreen() {
 
   return (
     <View style={[s.safe, { paddingTop: Platform.OS === 'android' ? 0 : 20 }]}>
-      <StatusBar style="light" translucent={true} backgroundColor="transparent" />
       <View style={s.screen}>
-        <FlashList
-          data={data}
-          renderItem={renderItem}
-          keyExtractor={item => item[0]}
-          estimatedItemSize={80}
+        <ScrollView
           contentContainerStyle={[s.scrollList, { paddingBottom: 100 }]}
           showsVerticalScrollIndicator={false}
-        />
+        >
+          {data.map((item) => (
+            <React.Fragment key={item[0]}>
+              {renderItem({ item })}
+            </React.Fragment>
+          ))}
+        </ScrollView>
       </View>
     </View>
   );
@@ -598,7 +598,6 @@ const SettingsScreen = memo(function SettingsScreen() {
 
   return (
     <View style={[s.safe, { paddingTop: Platform.OS === 'android' ? 0 : 20 }]}>
-      <StatusBar style="light" translucent={true} backgroundColor="transparent" />
       <ScrollView style={s.screen} contentContainerStyle={[s.scrollList, { paddingBottom: 100 }]}>
         {['thunder', 'frost', 'flow'].map(name => {
           const info = STRAT_INFO[name];
