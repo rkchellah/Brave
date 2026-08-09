@@ -1,26 +1,31 @@
-# QuantifyX — Workflow
+# Brave — Workflow
 
 ---
 
 ## How the Agent Works
 
-QuantifyX runs a continuous loop during Asian session hours (00:00–06:00 UTC).
-Every 15 minutes it checks market conditions and either generates a signal or skips.
+Brave runs a continuous loop. Every 60 seconds it syncs account state to the app; every
+cycle it re-checks whether there is a trade to make.
 
 ```
-Every 15 minutes:
-  ├── Is it Asian session (00:00–06:00 UTC)?      → No: sleep, wait
-  ├── Is it before cutoff (05:30 UTC)?             → No: no new entries
-  ├── Fetch 50 M15 candles from Kraken OHLCV API
-  ├── Calculate ATR — is market ranging?           → No: skip
-  ├── Calculate 20-period MA and price deviation
-  ├── Is deviation between $50 and $1000?          → No: skip
-  ├── Is market trending (slope > 100)?            → Yes: skip
-  ├── Generate mean reversion signal
-  │     BUY if price below MA (fade back up)
-  │     SELL if price above MA (fade back down)
-  ├── Log signal to Firebase
-  └── Execute order on Kraken (or dry run)
+Every 60 seconds:
+  ├── Is the bot running?                          → No: wait for start command
+  ├── Push balance/equity/positions to Firebase
+  ├── Health check due (every 10 min)?             → Yes: run it
+  ├── Execute any signals confirmed in the app     (MANUAL mode)
+  ├── Is Flow enabled in app settings?             → No: skip
+  ├── Daily loss limit hit (-5% on the day)?       → Yes: pause for the day
+  ├── Re-score tradable pairs (hourly)
+  ├── Any markets open?                            → No: skip
+  └── For each open pair:
+        ├── High-impact news within ±30 min?       → Yes: skip pair
+        └── run_brave_graph(symbol)
+              ├── DETECT      Flow finds a setup?  → No: end
+              ├── ANALYSE     DeepSeek on Finnhub headlines
+              │                 OPPOSE             → end
+              ├── RISK_CHECK  positions, daily loss, signal sanity
+              │                 fail               → end
+              └── EXECUTE (CONFIRM + AUTO)  or  HITL (UNCERTAIN or MANUAL)
 ```
 
 ---
@@ -29,114 +34,102 @@ Every 15 minutes:
 
 ### Daily Routine
 
-1. Verify connection is working:
+1. Start the MT5 terminal and confirm Algo Trading is enabled.
+
+2. Start the bot:
 ```powershell
-& ".\.venv\Scripts\python.exe" test_connection.py
+& ".\.venv\Scripts\python.exe" src/bot.py
 ```
 
-2. Run a pipeline test before the Asian session starts:
-```powershell
-& ".\.venv\Scripts\python.exe" test_frost.py
-```
+3. Press START in the app (or write `commands/action: start` in Firebase). The bot boots
+   paused — it will not trade until told to.
 
-3. Start the agent before midnight UTC:
-```powershell
-& ".\.venv\Scripts\python.exe" src/agent.py
-```
-
-4. Monitor Firebase Console for signals and trades during the session.
+4. Monitor the app or the Firebase Console during the session.
 
 5. Check logs after the session:
 ```powershell
-Get-Content logs\agent_YYYYMMDD.log
+Get-Content logs\brave_bot.log -Tail 100
+Get-Content logs\trades\trades_2026-08-09.csv
 ```
 
 ---
 
 ## Execution Modes
 
-**dry_run=True (default during testing)**
-The agent generates signals and logs orders but does not send them to Kraken.
-Use this until you have verified the full pipeline end-to-end.
+Set from the app (Dashboard → AUTO / MANUAL) or `EXECUTION_MODE` in `config.py`. The bot
+re-reads it from Firebase every cycle, so switching does not need a restart.
 
-**dry_run=False (live trading)**
-Orders are sent to Kraken. Only switch to this after:
-- Depositing funds into Kraken
-- Running at least one full Asian session in dry_run mode
-- Confirming signals are sensible in the logs
+**AUTO**
+CONFIRM verdicts execute immediately. UNCERTAIN still routes to the phone. OPPOSE aborts.
 
-To switch, update `src/agent.py`:
+**MANUAL**
+Every signal routes to `pending_signals` and waits for Confirm/Reject in the app. Nothing
+reaches the broker without a human tap. Use this until the full pipeline is verified.
+
+Signals expire after `SIGNAL_EXPIRY_SECONDS` (default 180) — a Flow setup at M15 is stale
+once price has moved off the AOI. A confirmation arriving after expiry is refused.
+
+---
+
+## Testing Outside Session Hours
+
+Flow's session filter blocks signals outside its four UTC windows. To exercise strategy
+logic during off hours, use backtest mode:
+
 ```python
-result = executor.execute(signal, dry_run=False)
+signal = Flow(config).analyze('EURUSD', provided_rates={
+    mt5.TIMEFRAME_H1:  h1_candles,
+    mt5.TIMEFRAME_M15: m15_candles,
+})
+```
+
+Passing `provided_rates` bypasses the session filter. It is safe — it places no orders.
+
+To exercise the HITL path without waiting for a real setup, set MANUAL mode and clear the
+queue first:
+
+```powershell
+& ".\.venv\Scripts\python.exe" scripts/clear_pending_signals.py --dry-run
+& ".\.venv\Scripts\python.exe" scripts/clear_pending_signals.py
 ```
 
 ---
 
-## Testing During the Day (Outside Asian Session)
+## Changing the Broker Account
 
-Frost's session filter blocks signals outside 00:00–06:00 UTC.
-To test strategy logic during the day, use backtest mode:
+Settings → Broker Account in the app writes `mt5_config` to Firebase. The bot reads it at
+startup only, so:
 
-```python
-candles = f._get_candles('XBTUSD', None)
-signal = f.analyze('XBTUSD', provided_rates={'M15': candles})
-```
+1. Save the new login / password / server in the app
+2. Stop the bot
+3. Start it again
+4. Confirm the log line: `MT5 credentials source: Firebase | Login: … | Server: …`
 
-Passing `provided_rates` bypasses the session filter.
-This is safe — it does not place any orders.
-
----
-
-## Threshold Calibration
-
-The thresholds in `frost_kraken.py` were calibrated from live BTC data observed
-during the port on April 3, 2026 (active market, not Asian session).
-
-| Threshold | Value | Observed Data |
-|---|---|---|
-| MAX_ATR_PIPS | 600.0 | ATR observed at $478–543 during active hours |
-| MAX_DEVIATION_PIPS | 1000.0 | Deviation observed at $531–777 |
-| Trend slope | 100.0 | Slope observed at ~70 during active hours |
-
-During Asian session (calm conditions), these values will be lower.
-If the agent is rejecting too many signals during Asian session:
-- Check the logs for which filter is triggering
-- Print the actual values (the slope logging line does this already)
-- Adjust the relevant threshold based on real observed data, not guesses
+If that line says `config.py fallback`, the Firebase node is missing a field — the bot
+refuses to log in with a half-filled config rather than locking itself out.
 
 ---
 
 ## Known Behavior
 
-**"Outside Asian session"**
-Expected. Frost only trades 00:00–06:00 UTC. Not a bug.
+**"Outside session"**
+Expected. Flow only trades Pre-London, London, Bridge and NY windows. Not a bug.
 
-**"ATR too high"**
-BTC is volatile right now. The agent will trade when it calms down during
-the Asian session. Not a bug.
+**"Skipped — high-impact news window"**
+A high-impact event for that pair's currencies is within ±30 minutes. Not a bug.
 
-**"Market trending — skip"**
-The linear regression slope is too steep for mean reversion to be safe.
-Asian session naturally produces ranging conditions. Not a bug.
+**"Max trades (N) already open on SYMBOL"**
+The per-symbol cap counts open positions *and* pending orders. Not a bug.
 
-**Balance returns empty dict**
-Normal if no funds deposited. Not an API error.
+**"UNCERTAIN — News analysis failed"**
+DeepSeek or Finnhub was unreachable. The pipeline degrades to a human decision rather than
+guessing. Check the key and connectivity if it persists.
 
-**Signal generated but no order placed**
-dry_run=True is active. This is intentional during testing.
+**"All markets closed — skipping"**
+No symbol reported a fresh tick. Normal at weekends.
 
----
+**Signal pushed but no order placed**
+MANUAL mode is active, or sentiment was UNCERTAIN. Confirm it in the app.
 
-## Hackathon Submission Checklist
-
-Before April 12, 2026:
-
-1. Register project at early.surge.xyz (required for prizes)
-2. Submit QuantifyX-Leaderboard read-only key to lablab.ai
-3. Record demo video showing:
-   - Agent running during Asian session
-   - Signal generated in logs
-   - Order appearing in Kraken
-4. Push final code to GitHub (public repo)
-5. Complete Devpost submission with all required fields
-6. Publish social posts tagging @krakenfx @lablabai @Surgexyz_
+**LangChain Pydantic v1 warning on import**
+Known, non-blocking on Python 3.14. Tracked in CHECKLIST.md.

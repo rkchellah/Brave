@@ -1,63 +1,149 @@
 """
-news_fetcher.py
-Fetches Finnhub headlines for a forex symbol and formats them for DeepSeek.
-Replaces sentiment_service.py — fetch only, no scoring.
+news_fetcher.py — Finnhub headlines for a forex symbol, formatted for DeepSeek.
+
+Fetch only, no scoring. The DeepSeek call in graph.py does the judging.
+
+The general-news endpoint returns the same feed for every symbol, so it is
+fetched once and cached for CACHE_TTL_SECONDS. Without that, a 60-second loop
+over three symbols burns ~4300 Finnhub calls a day and hits the rate limit.
 """
 
-import finnhub
 import logging
-from datetime import datetime, timedelta
+import threading
+import time
+from typing import Any
+
+import finnhub
+
 from config import FINNHUB_API_KEY
 
-SYMBOL_KEYWORDS = {
+log = logging.getLogger(__name__)
+
+CACHE_TTL_SECONDS = 300     # Re-fetch the feed at most every 5 minutes
+MAX_ATTEMPTS      = 2       # One retry on transient API failure
+RETRY_DELAY       = 2.0     # Seconds between attempts
+
+SYMBOL_KEYWORDS: dict[str, list[str]] = {
     "EURUSD": ["euro", "EUR", "ECB", "eurozone", "dollar", "Fed", "FOMC"],
     "GBPUSD": ["pound", "sterling", "GBP", "Bank of England", "BoE", "dollar", "Fed"],
     "XAUUSD": ["gold", "XAU", "bullion", "safe haven", "Fed", "inflation"],
+    "USDJPY": ["dollar", "Fed", "yen", "JPY", "Bank of Japan", "BoJ"],
     "USDCHF": ["dollar", "Fed", "Swiss franc", "CHF", "SNB"],
     "USDCAD": ["dollar", "Fed", "Canadian", "CAD", "oil", "crude"],
     "EURCHF": ["euro", "EUR", "ECB", "Swiss franc", "CHF", "SNB"],
 }
 
-def fetch_news_for_symbol(symbol: str, max_articles: int = 10) -> list[dict]:
-    """Fetch and filter Finnhub headlines relevant to a forex symbol."""
+DEFAULT_KEYWORDS = ["forex", "currency", "dollar", "central bank"]
+
+# ── Module-level feed cache (the bot is multi-threaded via Firebase listeners)
+_cache_lock: threading.Lock = threading.Lock()
+_cached_feed: list[dict[str, Any]] = []
+_cached_at: float = 0.0
+_client: finnhub.Client | None = None
+
+
+def _get_client() -> finnhub.Client | None:
+    """Lazily build the Finnhub client so a bad key doesn't crash at import."""
+    global _client
+    if _client is not None:
+        return _client
+    if not FINNHUB_API_KEY:
+        log.warning("[news_fetcher] FINNHUB_API_KEY is empty — news disabled")
+        return None
     try:
-        client   = finnhub.Client(api_key=FINNHUB_API_KEY)
-        keywords = SYMBOL_KEYWORDS.get(symbol, ["forex", "currency"])
+        _client = finnhub.Client(api_key=FINNHUB_API_KEY)
+        return _client
+    except Exception as e:
+        log.error(f"[news_fetcher] Could not create Finnhub client: {e}")
+        return None
 
-        news = client.general_news("general", min_id=0)
-        if not news:
-            logging.warning(f"[news_fetcher] No news returned from Finnhub for {symbol}")
-            return []
 
-        filtered = []
-        for article in news:
-            text = (article.get("headline", "") + " " + article.get("summary", "")).lower()
-            if any(kw.lower() in text for kw in keywords):
-                filtered.append({
-                    "headline": article.get("headline", ""),
-                    "summary":  article.get("summary", "")[:300],
-                    "url":      article.get("url", ""),
-                    "datetime": article.get("datetime", 0),
-                })
+def _fetch_feed() -> list[dict[str, Any]]:
+    """
+    Return the general news feed, cached for CACHE_TTL_SECONDS.
+
+    On failure the previous feed is kept and returned — stale headlines beat
+    no headlines, and the caller still gets a usable prompt.
+    """
+    global _cached_feed, _cached_at
+
+    with _cache_lock:
+        if _cached_feed and (time.monotonic() - _cached_at) < CACHE_TTL_SECONDS:
+            return _cached_feed
+
+        client = _get_client()
+        if client is None:
+            return _cached_feed
+
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            try:
+                news = client.general_news("general", min_id=0)
+                if not isinstance(news, list):
+                    log.warning(f"[news_fetcher] Unexpected payload type: {type(news).__name__}")
+                    news = []
+
+                # Keep only well-formed dicts — the API occasionally returns nulls
+                feed = [a for a in news if isinstance(a, dict) and a.get("headline")]
+
+                if feed:
+                    _cached_feed = feed
+                    _cached_at   = time.monotonic()
+                    log.info(f"[news_fetcher] Fetched {len(feed)} articles from Finnhub")
+                else:
+                    log.warning("[news_fetcher] Finnhub returned no usable articles")
+                return _cached_feed
+
+            except Exception as e:
+                log.warning(f"[news_fetcher] Fetch attempt {attempt}/{MAX_ATTEMPTS} failed: {e}")
+                if attempt < MAX_ATTEMPTS:
+                    time.sleep(RETRY_DELAY)
+
+        log.error("[news_fetcher] All fetch attempts failed — using cached feed if available")
+        return _cached_feed
+
+
+def fetch_news_for_symbol(symbol: str, max_articles: int = 10) -> list[dict[str, Any]]:
+    """Fetch Finnhub headlines and filter them down to ones relevant to `symbol`."""
+    if not symbol:
+        return []
+
+    symbol   = symbol.upper()
+    keywords = [k.lower() for k in SYMBOL_KEYWORDS.get(symbol, DEFAULT_KEYWORDS)]
+    max_articles = max(1, min(int(max_articles or 10), 25))
+
+    filtered: list[dict[str, Any]] = []
+    for article in _fetch_feed():
+        headline = str(article.get("headline") or "")
+        summary  = str(article.get("summary") or "")
+        text     = f"{headline} {summary}".lower()
+
+        if any(kw in text for kw in keywords):
+            filtered.append({
+                "headline": headline.strip(),
+                "summary":  summary.strip()[:300],
+                "url":      str(article.get("url") or ""),
+                "datetime": int(article.get("datetime") or 0),
+            })
             if len(filtered) >= max_articles:
                 break
 
-        logging.info(f"[news_fetcher] {symbol}: {len(filtered)} relevant articles")
-        return filtered
-
-    except Exception as e:
-        logging.error(f"[news_fetcher] Failed: {e}")
-        return []
+    log.info(f"[news_fetcher] {symbol}: {len(filtered)} relevant articles")
+    return filtered
 
 
-def format_headlines_for_llm(symbol: str, articles: list[dict]) -> str:
-    """Format headlines into clean text for DeepSeek prompt."""
+def format_headlines_for_llm(symbol: str, articles: list[dict[str, Any]]) -> str:
+    """Format headlines into clean prompt text for DeepSeek."""
     if not articles:
         return f"No recent news found for {symbol}."
 
     lines = [f"Recent news headlines for {symbol}:"]
     for i, a in enumerate(articles, 1):
-        lines.append(f"{i}. {a['headline']}")
-        if a["summary"]:
-            lines.append(f"   {a['summary'][:200]}")
-    return "\n".join(lines)
+        headline = str(a.get("headline") or "").strip()
+        if not headline:
+            continue
+        lines.append(f"{i}. {headline}")
+        summary = str(a.get("summary") or "").strip()
+        if summary:
+            lines.append(f"   {summary[:200]}")
+
+    return "\n".join(lines) if len(lines) > 1 else f"No recent news found for {symbol}."

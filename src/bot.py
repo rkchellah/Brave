@@ -1,42 +1,60 @@
-# bot.py — Brave Multi-Strategy Trading Bot
-# ─────────────────────────────────────────────────────────────────────
-# Phase 2 changes:
-#   1. _count_positions() now includes pending STOP orders
-#   2. NewsFilter integrated — skips signal during high-impact events
-#   3. Log rotation — daily files, max 7 days kept
-#   4. Firebase SSE reconnect handled gracefully (no crash on timeout)
-# ─────────────────────────────────────────────────────────────────────
+"""
+bot.py — Brave v3.0 runtime.
+
+Owns everything around the LangGraph pipeline: MT5 and Firebase connections,
+market/session state, pair selection, health checks and the main loop.
+The trading decision itself lives in graph.py; order placement lives in
+trade_executor.py.
+
+Each main loop iteration:
+    1. Refresh fast status (balance/equity/positions) for the mobile app
+    2. Every CHECK_INTERVAL seconds:
+       a. Health check (every HEALTH_CHECK_INTERVAL)
+       b. Consume signals the user confirmed in the app (MANUAL mode)
+       c. Daily loss limiter
+       d. Re-score tradable pairs (every PAIR_REFRESH_INTERVAL)
+       e. Run the graph on each open pair that passes the news filter
+"""
+
+import logging
+import logging.handlers
+import os
+import sys
+import time as time_module
+import traceback
+from datetime import datetime, timezone
 
 import MetaTrader5 as mt5
 import firebase_admin
-from firebase_admin import credentials, db
 import numpy as np
-import time as time_module
-import logging
-import logging.handlers
-import sys
-import os
-import traceback
-from datetime import datetime, time, timezone
+from firebase_admin import credentials, db
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from config import (
-    MT5_LOGIN, MT5_PASSWORD, MT5_SERVER,
-    FIREBASE_DATABASE_URL, USER_ID,
-    SYMBOLS, TIMEFRAME, LOT_SIZE, MAX_TRADES,
-    STOP_LOSS_PIPS, TAKE_PROFIT_PIPS,
-    EXECUTION_MODE, SIGNAL_EXPIRY_SECONDS
+from config import (  # noqa: E402
+    DAILY_LOSS_LIMIT_PCT,
+    EXECUTION_MODE,
+    FIREBASE_CREDENTIALS,
+    FIREBASE_DATABASE_URL,
+    LOT_SIZE,
+    MAX_TRADES,
+    MT5_LOGIN,
+    MT5_PASSWORD,
+    MT5_SERVER,
+    SIGNAL_EXPIRY_SECONDS,
+    STOP_LOSS_PIPS,
+    SYMBOLS,
+    TAKE_PROFIT_PIPS,
+    TIMEFRAME,
+    USER_ID,
+    ConfigError,
+    validate_config,
 )
+from graph import run_brave_graph  # noqa: E402
+from news_filter import NewsFilter  # noqa: E402
+from trade_executor import place_order  # noqa: E402
 
-from graph import run_brave_graph
-from flow import Flow
-from news_filter import NewsFilter
-
-# ── Strategy registry ─────────────────────────────────────────────────
-STRATEGY_REGISTRY: dict = {
-    "flow": Flow,
-}
+BOT_VERSION = "Brave v3.0"
 
 # ── Logging — rotating daily, keep 7 days ─────────────────────────────
 os.makedirs("logs", exist_ok=True)
@@ -53,260 +71,291 @@ _console.setLevel(logging.INFO)
 _console.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
 
 logging.basicConfig(level=logging.INFO, handlers=[_log_handler, _console])
+log = logging.getLogger(__name__)
 
 
 class BraveBot:
-    """
-    Brave trading bot — Phase 2.
-
-    Each main loop iteration:
-        1. Read brave_config/active_strategy from Firebase
-        2. Hot-swap strategy if changed
-        3. Check market status
-        4. News filter — skip pairs with high-impact events nearby
-        5. Run strategy.analyze() on open pairs
-        6. Place order if signal valid (1% risk sizing)
-        7. Push alert to Firebase
-    """
-
     CHECK_INTERVAL        = 60     # seconds between signal checks
     HEALTH_CHECK_INTERVAL = 600    # seconds between health checks
     PAIR_REFRESH_INTERVAL = 3600   # seconds between pair re-scoring
-
-    # ── Session windows (UTC) ─────────────────────────────────────
-    LONDON_OPEN  = time(8, 0)
-    LONDON_CLOSE = time(11, 0)
-    NY_OPEN      = time(13, 0)
-    NY_CLOSE     = time(16, 0)
+    MARKET_CACHE_SECONDS  = 60     # market status cache lifetime
+    MT5_RETRY_ATTEMPTS    = 3      # connection attempts at startup
 
     def __init__(self):
-        # firebase_enabled MUST be set first — the Firebase listener
-        # thread fires before __init__ completes and calls _update_status
-        self.firebase_enabled     = False
-        self.is_running           = False
-        self.last_health_check    = datetime.now()
-        self.last_market_check    = None
-        self.last_pair_refresh    = None
-        self.market_status_cache  = {}
-        self.active_pairs         = []
+        # firebase_enabled MUST be set first — the Firebase listener thread
+        # can fire before __init__ completes and call _update_status.
+        self.firebase_enabled      = False
+        self.is_running            = False
+        self.last_health_check     = datetime.now()
+        self.last_market_check     = None
+        self.last_pair_refresh     = None
+        self.market_status_cache   = {}
+        self.active_pairs          = []
+        self.execution_mode        = EXECUTION_MODE
         self._session_start_equity = None
         self._last_session_date    = None
+        self._mt5_credentials      = None   # (login, password, server, source), resolved at startup
 
-        self.active_strategy_name: str | None = None
-        self.strategy_instance                = None
-
-        # Phase 2: news filter
         self.news_filter = NewsFilter()
 
-        logging.info("=" * 60)
-        logging.info("INITIALIZING BRAVE BOT — Phase 2")
-        logging.info("=" * 60)
+        log.info("=" * 60)
+        log.info(f"INITIALIZING {BOT_VERSION}")
+        log.info("=" * 60)
+
+        for warning in validate_config():
+            log.warning(f"Config: {warning}")
+
+        # Firebase comes up first: broker credentials live in mt5_config and
+        # must be readable before the MT5 login attempt.
+        self.firebase_enabled = self._init_firebase()
+        if not self.firebase_enabled:
+            log.warning("Firebase disabled — running in LOCAL MODE (no app control, AUTO only)")
 
         if not self._init_mt5():
-            raise RuntimeError("MT5 initialization failed")
+            raise RuntimeError("MT5 initialization failed — see log for details")
 
-        self.firebase_enabled = self._init_firebase()
-        # Execution mode — read from Firebase on each cycle, falls back to config default
-        self.execution_mode = EXECUTION_MODE
-        if not self.firebase_enabled:
-            logging.warning("Firebase disabled — running in LOCAL MODE")
-
-        logging.info("Brave bot ready")
+        log.info("Brave bot ready")
 
     # ═══════════════════════════════════════════════════════════════
     # INITIALIZATION
     # ═══════════════════════════════════════════════════════════════
 
+    def _resolve_mt5_credentials(self) -> tuple[int, str, str, str]:
+        """
+        Broker credentials, resolved once per process and cached.
+
+        A mid-run reconnect must reuse the same account — silently switching
+        brokers while positions are open would leave them unmonitored. Changing
+        the account therefore requires a bot restart, which is what the app
+        tells the user.
+        """
+        if self._mt5_credentials is None:
+            self._mt5_credentials = self._read_mt5_credentials()
+        return self._mt5_credentials
+
+    def _read_mt5_credentials(self) -> tuple[int, str, str, str]:
+        """
+        Firebase first, config.py as backup.
+
+        Firebase wins only when login, password and server are all present and
+        usable — a half-filled node would otherwise lock the bot out of the
+        account with no way to recover from the app.
+
+        Returns (login, password, server, source). The password is never logged.
+        """
+        fallback = (MT5_LOGIN, MT5_PASSWORD, MT5_SERVER, "config.py fallback")
+
+        if not self.firebase_enabled:
+            return fallback
+
+        try:
+            remote = self.mt5_config_ref.get()
+        except Exception as e:
+            log.warning(f"Could not read mt5_config from Firebase ({e}) — using config.py fallback")
+            return fallback
+
+        if not isinstance(remote, dict) or not remote:
+            log.info("No mt5_config in Firebase — using config.py fallback")
+            return fallback
+
+        raw_login  = remote.get("login")
+        password   = str(remote.get("password") or "").strip()
+        server     = str(remote.get("server") or "").strip()
+
+        try:
+            login = int(str(raw_login).strip())
+        except (TypeError, ValueError):
+            login = 0
+
+        missing = [
+            name for name, ok in (
+                ("login", login > 0), ("password", bool(password)), ("server", bool(server)),
+            ) if not ok
+        ]
+        if missing:
+            log.warning(
+                f"mt5_config in Firebase is incomplete (missing/invalid: {', '.join(missing)}) "
+                "— using config.py fallback"
+            )
+            return fallback
+
+        return login, password, server, "Firebase"
+
     def _init_mt5(self) -> bool:
-        if not mt5.initialize():
-            logging.error("MT5 initialization failed")
-            return False
+        """Connect to MT5, retrying briefly — the terminal is often still booting."""
+        login, password, server, source = self._resolve_mt5_credentials()
+        log.info(f"MT5 credentials source: {source} | Login: {login} | Server: {server}")
 
-        authorized = mt5.login(MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER)
-        if not authorized:
-            logging.error(f"MT5 login failed: {mt5.last_error()}")
-            return False
+        for attempt in range(1, self.MT5_RETRY_ATTEMPTS + 1):
+            try:
+                if not mt5.initialize():
+                    log.error(f"MT5 initialize failed (attempt {attempt}): {mt5.last_error()}")
+                elif not mt5.login(login, password=password, server=server):
+                    log.error(f"MT5 login failed (attempt {attempt}): {mt5.last_error()}")
+                    mt5.shutdown()
+                else:
+                    info = mt5.account_info()
+                    if info is None:
+                        log.error(f"MT5 connected but account info unavailable (attempt {attempt})")
+                    else:
+                        log.info(f"MT5 connected — Account: {info.login} | Balance: ${info.balance:.2f}")
+                        if not info.trade_allowed:
+                            log.warning("Account reports trading NOT allowed — orders will be rejected")
+                        return True
+            except Exception as e:
+                log.error(f"MT5 connection error (attempt {attempt}): {e}")
 
-        info = mt5.account_info()
-        logging.info(f"MT5 connected — Account: {info.login} | Balance: ${info.balance:.2f}")
-        return True
+            if attempt < self.MT5_RETRY_ATTEMPTS:
+                time_module.sleep(5)
+
+        return False
+
+    def _reconnect_mt5(self) -> bool:
+        """Re-establish a dropped terminal connection mid-run."""
+        log.warning("MT5 connection lost — attempting to reconnect...")
+        try:
+            mt5.shutdown()
+        except Exception:
+            pass
+        return self._init_mt5()
 
     def _init_firebase(self) -> bool:
-        if not os.path.exists("serviceAccountKey.json"):
-            logging.error("serviceAccountKey.json not found")
+        if not os.path.exists(FIREBASE_CREDENTIALS):
+            log.error(f"Firebase credentials '{FIREBASE_CREDENTIALS}' not found")
             return False
 
         try:
-            cred = credentials.Certificate("serviceAccountKey.json")
-            firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_DATABASE_URL})
+            if not firebase_admin._apps:
+                cred = credentials.Certificate(FIREBASE_CREDENTIALS)
+                firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_DATABASE_URL})
 
-            self.config_ref        = db.reference(f"users/{USER_ID}/bot_config")
-            self.brave_config_ref  = db.reference(f"users/{USER_ID}/brave_config")
-            self.status_ref        = db.reference(f"users/{USER_ID}/bot_status")
-            self.command_ref       = db.reference(f"users/{USER_ID}/commands")
-            self.trades_ref        = db.reference(f"users/{USER_ID}/trades")
-            self.health_ref        = db.reference(f"users/{USER_ID}/health")
-            self.alerts_ref        = db.reference(f"users/{USER_ID}/alerts")
-            self.pending_signals_ref = db.reference(f"users/{USER_ID}/pending_signals")
-            self.market_status_ref = db.reference(f"users/{USER_ID}/market_status")
+            base = f"users/{USER_ID}"
+            self.config_ref          = db.reference(f"{base}/bot_config")
+            self.brave_config_ref    = db.reference(f"{base}/brave_config")
+            self.status_ref          = db.reference(f"{base}/bot_status")
+            self.command_ref         = db.reference(f"{base}/commands")
+            self.health_ref          = db.reference(f"{base}/health")
+            self.alerts_ref          = db.reference(f"{base}/alerts")
+            self.pending_signals_ref = db.reference(f"{base}/pending_signals")
+            self.news_analysis_ref   = db.reference(f"{base}/news_analysis")
+            self.mt5_config_ref      = db.reference(f"{base}/mt5_config")
+            self.market_status_ref   = db.reference(f"{base}/market_status")
 
-            self.config_ref.get()  # connection test
+            self.config_ref.get()  # connection test — raises if unreachable
 
-            if self.brave_config_ref.get() is None:
-                self.brave_config_ref.set({
-                    "active_strategy":      "flow",
-                    "available_strategies": list(STRATEGY_REGISTRY.keys()),
-                    "last_switched":        None,
-                    "switched_by":          None,
-                    "execution_mode":       EXECUTION_MODE,
-                    "strategy_config": {
-                        "flow": {"enabled": True, "max_trades": 2},
-                    },
-                })
-                logging.info("brave_config initialized in Firebase")
-            else:
-                existing = self.brave_config_ref.get()
-                if existing:
-                    if "execution_mode" not in existing:
-                        self.brave_config_ref.update({"execution_mode": EXECUTION_MODE})
-                    if "strategy_config" not in existing:
-                        self.brave_config_ref.update({
-                            "strategy_config": {
-                                "flow": {"enabled": True, "max_trades": 2},
-                            }
-                        })
+            self._seed_defaults()
 
-            if self.config_ref.get() is None:
-                self.config_ref.set({
-                    "symbols":          SYMBOLS,
-                    "timeframe":        TIMEFRAME,
-                    "lot_size":         LOT_SIZE,
-                    "max_trades":       MAX_TRADES,
-                    "stop_loss_pips":   STOP_LOSS_PIPS,
-                    "take_profit_pips": TAKE_PROFIT_PIPS,
-                })
-
+            # Listeners run on background threads; both handlers swallow their
+            # own exceptions so an SSE hiccup can't kill the stream.
             self.command_ref.listen(self._handle_command)
             self.brave_config_ref.listen(self._handle_config_change)
 
             self._update_status({
                 "is_running":      False,
-                "bot_version":     "Brave v2.0",
-                "active_strategy": "unknown",
+                "bot_version":     BOT_VERSION,
+                "active_strategy": "flow",
             })
 
-            logging.info("Firebase connected — command listener active")
+            log.info("Firebase connected — command listener active")
             return True
 
         except Exception as e:
-            logging.error(f"Firebase init failed: {e}")
+            log.error(f"Firebase init failed: {e}")
             traceback.print_exc()
             return False
 
-    # ═══════════════════════════════════════════════════════════════
-    # STRATEGY SWITCHING
-    # ═══════════════════════════════════════════════════════════════
+    def _seed_defaults(self) -> None:
+        """Create bot_config / brave_config on first run, and backfill new keys."""
+        brave_config = self.brave_config_ref.get()
+        if not brave_config:
+            self.brave_config_ref.set({
+                "active_strategy": "flow",
+                "execution_mode":  EXECUTION_MODE,
+                "strategy_config": {"flow": {"enabled": True, "max_trades": MAX_TRADES}},
+                "last_switched":   None,
+            })
+            log.info("brave_config initialized in Firebase")
+        else:
+            backfill = {}
+            if "execution_mode" not in brave_config:
+                backfill["execution_mode"] = EXECUTION_MODE
+            if "strategy_config" not in brave_config:
+                backfill["strategy_config"] = {"flow": {"enabled": True, "max_trades": MAX_TRADES}}
+            if "active_strategy" not in brave_config:
+                backfill["active_strategy"] = "flow"
+            if backfill:
+                self.brave_config_ref.update(backfill)
 
-    def _load_active_strategies(self, config: dict) -> list:
-        """
-        Load all enabled strategies from Firebase brave_config.
-        Supports running multiple strategies simultaneously.
-        Each strategy runs independently with its own max_trades limit.
-        Falls back to single active_strategy for backward compatibility.
-        """
-        if not self.firebase_enabled:
-            return [self._get_fallback_strategy(config)]
-
-        try:
-            brave_config = self.brave_config_ref.get()
-            if not brave_config:
-                return [self._get_fallback_strategy(config)]
-
-            # New multi-strategy format
-            strategy_config = brave_config.get("strategy_config", {})
-            if strategy_config:
-                active = []
-                for name, cfg in strategy_config.items():
-                    if cfg.get("enabled", False) and name in STRATEGY_REGISTRY:
-                        instance = STRATEGY_REGISTRY[name](config)
-                        max_trades = cfg.get("max_trades", 2)
-                        active.append({
-                            "name":       name,
-                            "instance":   instance,
-                            "max_trades": max_trades,
-                        })
-                if active:
-                    names = [s["name"] for s in active]
-                    logging.info(f"Active strategies: {names}")
-                    self._update_status({"active_strategy": ", ".join(names)})
-                    self.active_strategy_name = ", ".join(names)
-                    return active
-
-            # Backward compatibility — single active_strategy
-            return [self._get_fallback_strategy(config)]
-
-        except Exception as e:
-            logging.error(f"Failed to load strategies: {e}")
-            return [self._get_fallback_strategy(config)]
-
-    def _get_fallback_strategy(self, config: dict) -> dict:
-        """Fall back to single active_strategy from brave_config."""
-        try:
-            brave_config = self.brave_config_ref.get() if self.firebase_enabled else {}
-            name = brave_config.get("active_strategy", "flow") if brave_config else "flow"
-        except Exception:
-            name = "flow"
-        if name not in STRATEGY_REGISTRY:
-            name = "flow"
-        return {
-            "name":       name,
-            "instance":   STRATEGY_REGISTRY[name](config),
-            "max_trades": 2,
-        }
+        if not self.config_ref.get():
+            self.config_ref.set({
+                "symbols":          SYMBOLS,
+                "timeframe":        TIMEFRAME,
+                "lot_size":         LOT_SIZE,
+                "max_trades":       MAX_TRADES,
+                "stop_loss_pips":   STOP_LOSS_PIPS,
+                "take_profit_pips": TAKE_PROFIT_PIPS,
+            })
 
     # ═══════════════════════════════════════════════════════════════
-    # COMMAND HANDLER
+    # FIREBASE LISTENERS
     # ═══════════════════════════════════════════════════════════════
 
     def _handle_command(self, event) -> None:
         try:
             command = event.data
-            if not command:
+            if not isinstance(command, dict):
                 return
 
-            action = command.get("action")
-            logging.info(f"Command received: {action}")
-
+            action = str(command.get("action", "")).lower()
             if action == "start":
                 self.is_running = True
-                self._update_status({"is_running": True, "last_started": datetime.now().isoformat()})
-                logging.info("Bot STARTED via command")
-
+                self._update_status({"is_running": True, "paused_reason": None,
+                                     "last_started": datetime.now().isoformat()})
+                log.info("Bot STARTED via command")
             elif action == "stop":
                 self.is_running = False
-                self._update_status({"is_running": False, "last_stopped": datetime.now().isoformat()})
-                logging.info("Bot STOPPED via command")
+                self._update_status({"is_running": False,
+                                     "last_stopped": datetime.now().isoformat()})
+                log.info("Bot STOPPED via command")
+            elif action:
+                log.warning(f"Unknown command ignored: {action}")
 
         except Exception as e:
-            logging.error(f"Error handling command: {e}")
+            log.error(f"Error handling command: {e}")
 
     def _handle_config_change(self, event) -> None:
-        """Listener for brave_config changes — updates dashboard instantly."""
+        """Mirror app config changes into status so the dashboard updates instantly."""
         try:
             config = event.data
-            if not config:
+            if not isinstance(config, dict):
                 return
-            
-            # Extract current enabled strategy
-            strat_cfg = config.get("strategy_config", {})
-            enabled_names = [name for name, cfg in strat_cfg.items() if cfg.get("enabled")]
-            
-            if enabled_names:
-                display_name = ", ".join(enabled_names)
-                logging.info(f"Config change detected — Active: {display_name}")
-                self._update_status({"active_strategy": display_name})
+
+            mode = str(config.get("execution_mode", self.execution_mode)).upper()
+            if mode in ("AUTO", "MANUAL") and mode != self.execution_mode:
+                self.execution_mode = mode
+                log.info(f"Execution mode changed → {mode}")
+
+            if self._flow_enabled(config):
+                self._update_status({"active_strategy": "flow"})
+            else:
+                self._update_status({"active_strategy": "none"})
+                log.info("Flow disabled from app — no new signals will be taken")
+
         except Exception as e:
-            logging.error(f"Error handling config change: {e}")
+            log.error(f"Error handling config change: {e}")
+
+    @staticmethod
+    def _flow_enabled(brave_config: dict | None) -> bool:
+        """Flow is on unless the app explicitly disabled it."""
+        if not isinstance(brave_config, dict):
+            return True
+        strategy_config = brave_config.get("strategy_config")
+        if not isinstance(strategy_config, dict):
+            return True
+        flow_cfg = strategy_config.get("flow")
+        if not isinstance(flow_cfg, dict):
+            return True
+        return flow_cfg.get("enabled", True) is not False
 
     # ═══════════════════════════════════════════════════════════════
     # MARKET STATUS
@@ -316,29 +365,28 @@ class BraveBot:
         now   = datetime.now()
         stale = (
             self.last_market_check is None
-            or (now - self.last_market_check).total_seconds() >= 60
+            or (now - self.last_market_check).total_seconds() >= self.MARKET_CACHE_SECONDS
         )
-
         if not (force or stale):
             return self.market_status_cache
 
         status = {}
         for symbol in SYMBOLS:
-            info = mt5.symbol_info(symbol)
-            if info is None:
-                status[symbol] = "UNAVAILABLE"
-                continue
-
-            if info.trade_mode == mt5.SYMBOL_TRADE_MODE_DISABLED:
-                status[symbol] = "CLOSED"
-            elif info.trade_mode == mt5.SYMBOL_TRADE_MODE_FULL:
-                tick = mt5.symbol_info_tick(symbol)
-                if tick and (datetime.now().timestamp() - tick.time) < 300:
-                    status[symbol] = "OPEN"
-                else:
+            try:
+                info = mt5.symbol_info(symbol)
+                if info is None:
+                    status[symbol] = "UNAVAILABLE"
+                elif info.trade_mode == mt5.SYMBOL_TRADE_MODE_DISABLED:
                     status[symbol] = "CLOSED"
-            else:
-                status[symbol] = "RESTRICTED"
+                elif info.trade_mode == mt5.SYMBOL_TRADE_MODE_FULL:
+                    tick = mt5.symbol_info_tick(symbol)
+                    fresh = tick and (datetime.now().timestamp() - tick.time) < 300
+                    status[symbol] = "OPEN" if fresh else "CLOSED"
+                else:
+                    status[symbol] = "RESTRICTED"
+            except Exception as e:
+                log.debug(f"[{symbol}] Market status check failed: {e}")
+                status[symbol] = "UNAVAILABLE"
 
         self.market_status_cache = status
         self.last_market_check   = now
@@ -352,7 +400,7 @@ class BraveBot:
                     "all_closed":   all(v == "CLOSED" for v in status.values()),
                 })
             except Exception as e:
-                logging.error(f"Failed to update market status: {e}")
+                log.debug(f"Failed to update market status: {e}")
 
         return status
 
@@ -364,7 +412,8 @@ class BraveBot:
     # ═══════════════════════════════════════════════════════════════
 
     def _select_pairs(self, max_pairs: int = 3) -> list[str]:
-        logging.info("Selecting trading pairs...")
+        """Score symbols on spread and volatility, keep the best few."""
+        log.info("Selecting trading pairs...")
         scored = []
 
         for symbol in SYMBOLS:
@@ -374,41 +423,39 @@ class BraveBot:
                     continue
 
                 tick = mt5.symbol_info_tick(symbol)
-                if tick is None:
+                if tick is None or tick.ask <= 0 or tick.bid <= 0:
                     continue
 
-                point  = info.point
+                point = info.point
                 if info.digits in (5, 3):
-                    # Multiplier for 5/3 degimal brokers to treat 1.0 as 1 pip
-                    point *= 10
-
-                spread = (tick.ask - tick.bid) / point
+                    point *= 10  # 5/3-digit brokers quote fractional pips
+                if point <= 0:
+                    continue
 
                 rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_H1, 0, 20)
                 if rates is None or len(rates) < 20:
                     continue
 
-                avg_range        = np.mean([(r["high"] - r["low"]) / point for r in rates])
-                spread_score     = max(0, 10 - spread)
-                volatility_score = min(avg_range / 10, 10)
-                major_bonus      = 3 if symbol in ["EURUSD", "GBPUSD", "XAUUSD"] else 0
-
-                if symbol == "USDJPY":  # Pending backtest
-                    continue
+                spread           = (tick.ask - tick.bid) / point
+                avg_range        = float(np.mean([(r["high"] - r["low"]) / point for r in rates]))
+                spread_score     = max(0.0, 10.0 - spread)
+                volatility_score = min(avg_range / 10.0, 10.0)
+                major_bonus      = 3.0 if symbol in ("EURUSD", "GBPUSD", "XAUUSD") else 0.0
 
                 scored.append({"symbol": symbol, "score": spread_score + volatility_score + major_bonus})
 
-            except Exception:
+            except Exception as e:
+                log.debug(f"[{symbol}] Pair scoring failed: {e}")
                 continue
 
         scored.sort(key=lambda x: x["score"], reverse=True)
         selected = [p["symbol"] for p in scored[:max_pairs]]
 
         if not selected:
-            logging.warning("No pairs scored — falling back to EURUSD")
+            log.warning("No pairs scored — falling back to EURUSD")
             return ["EURUSD"]
 
-        logging.info(f"Selected pairs: {', '.join(selected)}")
+        log.info(f"Selected pairs: {', '.join(selected)}")
         return selected
 
     # ═══════════════════════════════════════════════════════════════
@@ -416,7 +463,7 @@ class BraveBot:
     # ═══════════════════════════════════════════════════════════════
 
     def _health_check(self) -> bool:
-        logging.info("Running health check...")
+        log.info("Running health check...")
 
         health: dict = {
             "timestamp":             datetime.now().isoformat(),
@@ -425,141 +472,127 @@ class BraveBot:
             "account_trade_allowed": False,
             "symbols_available":     {},
             "market_status":         {},
-            "active_strategy":       self.active_strategy_name,
-            "bot_version":           "Brave v2.0",
+            "active_strategy":       "flow",
+            "execution_mode":        self._get_execution_mode(),
+            "bot_version":           BOT_VERSION,
             "status":                "UNKNOWN",
         }
 
-        terminal = mt5.terminal_info()
-        if terminal:
-            health["mt5_connected"]           = True
-            health["mt5_connected_to_broker"] = terminal.connected
+        try:
+            terminal = mt5.terminal_info()
+            if terminal:
+                health["mt5_connected"]           = True
+                health["mt5_connected_to_broker"] = terminal.connected
+            elif not self._reconnect_mt5():
+                log.error("Health check: MT5 unreachable and reconnect failed")
+            else:
+                health["mt5_connected"] = True
 
-        if self.firebase_enabled:
-            try:
-                self.status_ref.get()
-                health["firebase_connected"] = True
-            except Exception:
-                health["firebase_connected"] = False
+            if self.firebase_enabled:
+                try:
+                    self.status_ref.get()
+                    health["firebase_connected"] = True
+                except Exception as e:
+                    log.warning(f"Health check: Firebase unreachable — {e}")
 
-        health["market_status"] = self._refresh_market_status(force=True)
+            health["market_status"] = self._refresh_market_status(force=True)
+            health["symbols_available"] = {
+                symbol: mt5.symbol_info_tick(symbol) is not None for symbol in SYMBOLS
+            }
 
-        for symbol in SYMBOLS:
-            tick = mt5.symbol_info_tick(symbol)
-            health["symbols_available"][symbol] = tick is not None
+            account = mt5.account_info()
+            if account:
+                health["account_trade_allowed"] = account.trade_allowed
+                health["balance"]               = account.balance
+                health["equity"]                = account.equity
 
-        account = mt5.account_info()
-        if account:
-            health["account_trade_allowed"] = account.trade_allowed
-            health["balance"]               = account.balance
-            health["equity"]                = account.equity
+        except Exception as e:
+            log.error(f"Health check error: {e}")
 
-        checks = [
-            health["mt5_connected"],
-            health["firebase_connected"],
-            health["account_trade_allowed"],
-        ]
-        health["status"] = "HEALTHY" if all(checks) else "DEGRADED"
-
-        if health["status"] == "HEALTHY":
-            logging.info("Health check PASSED")
-        else:
-            logging.warning("Health check DEGRADED — review logs")
+        healthy = all((health["mt5_connected"], health["firebase_connected"],
+                       health["account_trade_allowed"]))
+        health["status"] = "HEALTHY" if healthy else "DEGRADED"
+        log.info("Health check PASSED" if healthy else "Health check DEGRADED — review logs")
 
         if self.firebase_enabled:
             try:
                 self.health_ref.set(health)
             except Exception as e:
-                logging.error(f"Failed to push health: {e}")
+                log.debug(f"Failed to push health: {e}")
 
         self.last_health_check = datetime.now()
-        return health["status"] == "HEALTHY"
+        return healthy
 
     # ═══════════════════════════════════════════════════════════════
-    # SIGNAL CHECKING — Phase 2
+    # SIGNAL CHECKING
     # ═══════════════════════════════════════════════════════════════
 
     def _check_signals(self, config: dict) -> None:
-        logging.info(f"Checking signals... ({datetime.now().strftime('%H:%M:%S')})")
+        log.info(f"Checking signals... ({datetime.now().strftime('%H:%M:%S')})")
 
-        strategies = self._load_active_strategies(config)
-        if not strategies:
-            logging.error("No valid strategies — skipping")
+        if not self._flow_enabled(self._get_brave_config()):
+            log.info("Flow disabled in app settings — skipping")
+            self._update_status({"is_running": True, "trading_active": False})
             return
 
-        # ── Daily Loss Limiter ────────────────────────────────────────
-        account = mt5.account_info()
-        if account:
-            session_pnl, _ = self._get_session_metrics(account)
-            if self._session_start_equity is None:
-                return
-            loss_limit  = -(self._session_start_equity * 0.05)
-
-            if session_pnl <= loss_limit:
-                logging.warning(
-                    f"Daily loss limit hit (${session_pnl:.2f} <= ${loss_limit:.2f}) "
-                    "— bot paused for today"
-                )
-                self.is_running = False
-                self._update_status({
-                    "is_running":     False,
-                    "trading_active": False,
-                    "paused_reason":  "DAILY_LOSS_LIMIT",
-                    "pnl_at_pause":   session_pnl
-                })
-                return
+        if self._daily_loss_limit_hit():
+            return
 
         if (
             self.last_pair_refresh is None
             or (datetime.now() - self.last_pair_refresh).total_seconds() >= self.PAIR_REFRESH_INTERVAL
         ):
-            # Recalculate best pairs periodically to adapt to changing volatility/spreads
-            now = datetime.now()
             self.active_pairs      = self._select_pairs(max_pairs=3)
-            self.last_pair_refresh = now
+            self.last_pair_refresh = datetime.now()
 
         open_markets = self._open_markets()
         if not open_markets:
-            logging.info("All markets closed — skipping")
+            log.info("All markets closed — skipping")
             self._update_status({"is_running": True, "trading_active": False})
             return
 
         pairs_to_analyze = [p for p in self.active_pairs if p in open_markets]
         if not pairs_to_analyze:
-            logging.info(f"Selected pairs {self.active_pairs} not open right now")
+            log.info(f"Selected pairs {self.active_pairs} not open right now")
+            self._update_status({"is_running": True, "trading_active": False})
             return
 
-        logging.info(f"Analyzing: {', '.join(pairs_to_analyze)} | Strategy: {self.active_strategy_name}")
+        mode = self._get_execution_mode()
+        log.info(f"Analyzing: {', '.join(pairs_to_analyze)} | Strategy: Flow | Mode: {mode}")
+
+        firebase_refs = {
+            "alerts_ref":          getattr(self, "alerts_ref", None),
+            "pending_signals_ref": getattr(self, "pending_signals_ref", None),
+            "news_analysis_ref":   getattr(self, "news_analysis_ref", None),
+        } if self.firebase_enabled else {}
 
         for symbol in pairs_to_analyze:
             try:
                 if not self.news_filter.is_safe_to_trade(symbol):
-                    logging.info(f"[{symbol}] Skipped — high-impact news window")
+                    log.info(f"[{symbol}] Skipped — high-impact news window")
                     continue
 
-                firebase_refs = {
-                    "alerts_ref":          self.alerts_ref,
-                    "pending_signals_ref": self.pending_signals_ref,
-                }
-
-                result = run_brave_graph(symbol, config, firebase_refs)
+                result = run_brave_graph(symbol, config, firebase_refs, execution_mode=mode)
 
                 if result.get("hitl_required"):
-                    logging.info(f"[{symbol}] Awaiting human confirmation via app")
+                    log.info(f"[{symbol}] Awaiting confirmation in app")
+                elif result.get("executed"):
+                    log.info(f"[{symbol}] Trade executed")
                 elif result.get("abort"):
-                    logging.info(f"[{symbol}] Aborted: {result.get('abort_reason')}")
-                elif result.get("risk_ok") and result.get("sentiment") != "OPPOSE":
-                    logging.info(f"[{symbol}] Pipeline complete")
+                    log.info(f"[{symbol}] Aborted: {result.get('abort_reason')}")
+                elif not result.get("risk_ok"):
+                    log.info(f"[{symbol}] Blocked: {result.get('risk_reason')}")
 
             except Exception as e:
-                logging.error(f"[{symbol}] Error during analysis: {e}")
+                log.error(f"[{symbol}] Error during analysis: {e}")
                 traceback.print_exc()
 
         account = mt5.account_info()
         self._update_status({
             "is_running":       True,
             "trading_active":   True,
-            "active_strategy":  self.active_strategy_name,
+            "active_strategy":  "flow",
+            "execution_mode":   mode,
             "open_markets":     open_markets,
             "markets_analyzed": pairs_to_analyze,
             "balance":          account.balance if account else None,
@@ -568,221 +601,172 @@ class BraveBot:
             "open_positions":   self._count_positions(),
         })
 
-    # ═══════════════════════════════════════════════════════════════
-    # TRADE EXECUTION
-    # ═══════════════════════════════════════════════════════════════
-
-    def execute_signal(self, symbol: str, signal: dict, config: dict):
-        """Execute a signal with 1% risk-based lot sizing."""
-        try:
-            strategy_name = signal.get("strategy_name", self.active_strategy_name)
-
-            market_status = self._refresh_market_status(force=True)
-            if market_status.get(symbol) != "OPEN":
-                logging.warning(f"[{symbol}] Market closed — cannot execute")
-                return None
-
-            account = mt5.account_info()
-            tick    = mt5.symbol_info_tick(symbol)
-            info    = mt5.symbol_info(symbol)
-            if not all([account, tick, info]):
-                logging.error(f"[{symbol}] Could not get account/tick/symbol info")
-                return None
-
-            direction = signal["direction"]
-            entry     = signal["entry_price"]
-            sl        = signal["suggested_sl"]
-            tp        = signal["suggested_tp"]
-
-            risk_per_trade = account.balance * 0.01
-            price_risk     = abs(entry - sl)
-
-            if price_risk == 0:
-                logging.error(f"[{symbol}] Entry == SL — skipping")
-                return None
-
-            lot = risk_per_trade / (price_risk * info.trade_contract_size)
-            lot = max(info.volume_min, min(info.volume_max,
-                      round(lot / info.volume_step) * info.volume_step))
-
-            logging.info(
-                f"[{symbol}] Risk sizing: Account=${account.balance:.2f} | "
-                f"Risk=${risk_per_trade:.2f} | Lot={lot:.2f}"
-            )
-
-            order_type_map = {
-                ("BUY",  "STOP"):   mt5.ORDER_TYPE_BUY_STOP,
-                ("SELL", "STOP"):   mt5.ORDER_TYPE_SELL_STOP,
-                ("BUY",  "MARKET"): mt5.ORDER_TYPE_BUY,
-                ("SELL", "MARKET"): mt5.ORDER_TYPE_SELL,
-            }
-
-            sig_type   = signal.get("order_type", "MARKET")
-            order_type = order_type_map.get(
-                (direction, sig_type),
-                mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL,
-            )
-
-            price = entry if sig_type == "STOP" else (tick.ask if direction == "BUY" else tick.bid)
-
-            # Phase 2 fix: Round to symbol digits so XAUUSD doesn't drop SL/TP
-            price = round(price, info.digits)
-            sl    = round(sl, info.digits)
-            tp    = round(tp, info.digits)
-
-            xauusd_manual = symbol == "XAUUSD"
-
-            request = {
-                "action":       mt5.TRADE_ACTION_PENDING if sig_type == "STOP" else mt5.TRADE_ACTION_DEAL,
-                "symbol":       symbol,
-                "volume":       round(lot, 2),
-                "type":         order_type,
-                "price":        price,
-                "sl":           0.0 if xauusd_manual else sl,
-                "tp":           0.0 if xauusd_manual else tp,
-                "deviation":    20,
-                "magic":        300001,
-                "comment":      f"brave_{strategy_name[:10]}",
-                "type_time":    mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC if sig_type == "MARKET" else mt5.ORDER_FILLING_RETURN,
-            }
-
-            if xauusd_manual:
-                logging.warning(
-                    f"[{symbol}] set manually in MT5 -> "
-                    f"Direction: {direction} | Entry: {price} | SL: {sl} | TP: {tp}"
-                )
-
-            # ── Execution mode gate ───────────────────────────────────
-            # Read from Firebase so mobile app can switch without restart
-            mode = self._get_execution_mode()
-            logging.info(f"[{symbol}] Execution mode: {mode}")
-
-            if mode == "MANUAL":
-                push_key = self._push_pending_signal(symbol, signal)
-                if not push_key:
-                    return
-                outcome = self._wait_for_confirmation(symbol, push_key)
-                if outcome != "CONFIRMED":
-                    # Log skipped trade to Firebase for transparency
-                    if self.firebase_enabled:
-                        try:
-                            self.alerts_ref.push({
-                                **signal,
-                                "alert_type":      "MANUAL_SKIPPED",
-                                "action_required": outcome,
-                                "sent_at":         datetime.now(timezone.utc).isoformat(),
-                            })
-                        except Exception:
-                            pass
-                    return
-                logging.info(f"[{symbol}] Proceeding to execute confirmed MANUAL signal")
-
-            result = mt5.order_send(request)
-
-            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-                ticket = getattr(result, "order", 0)
-                price  = getattr(result, "price", 0.0)
-                logging.info(f"[{symbol}] Order placed — ticket: {ticket} at {price}")
-                
-                self._log_trade_to_csv(symbol, signal, lot, result)
-                if self.firebase_enabled:
-                    try:
-                        # 1. Detailed execution record
-                        self.trades_ref.push({
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "symbol":    symbol,
-                            "type":      f"{direction}_{sig_type}",
-                            "entry":     price,
-                            "sl":        sl,
-                            "tp":        tp,
-                            "lot":       lot,
-                            "ticket":    ticket,
-                            "strategy":  strategy_name,
-                            "session":   self._get_current_session(),
-                        })
-                        
-                        # 2. Fast UI Alert
-                        self.alerts_ref.push({
-                            "alert_type":   "TRADE_EXECUTED",
-                            "symbol":       symbol,
-                            "direction":    direction,
-                            "ticket":       ticket,
-                            "filled_price": price,
-                            "retcode":      result.retcode,
-                            "strategy":     strategy_name,
-                            "sent_at":      datetime.now(timezone.utc).isoformat(),
-                        })
-                    except Exception as e:
-                        logging.error(f"[{symbol}] trades record/alert push failed: {e}")
-                return result
-            else:
-                err = result.comment if result else "No result from order_send"
-                logging.error(f"[{symbol}] Order failed: {err}")
-                return None
-
-        except Exception as e:
-            logging.error(f"[{symbol}] Execution error: {e}")
-            traceback.print_exc()
-            return None
-
-    def _log_trade_to_csv(self, symbol: str, signal: dict, lot: float, result) -> None:
-        import csv
-        from pathlib import Path
-
-        os.makedirs("logs/trades", exist_ok=True)
-        today    = datetime.now().strftime("%Y-%m-%d")
-        csv_path = f"logs/trades/trades_{today}.csv"
-
-        headers = [
-            "timestamp", "symbol", "strategy", "direction", "order_type",
-            "entry_price", "sl", "tp", "lot", "risk_reward",
-            "ticket", "session", "account_balance", "account_equity"
-        ]
-
+    def _daily_loss_limit_hit(self) -> bool:
+        """Pause the bot for the day once the session drawdown limit is reached."""
         account = mt5.account_info()
-        row = {
-            "timestamp":       datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "symbol":          symbol,
-            "strategy":        signal.get("strategy_name", self.active_strategy_name),
-            "direction":       signal["direction"],
-            "order_type":      signal.get("order_type", "MARKET"),
-            "entry_price":     signal["entry_price"],
-            "sl":              signal["suggested_sl"],
-            "tp":              signal["suggested_tp"],
-            "lot":             lot,
-            "risk_reward":     signal["risk_reward_ratio"],
-            "ticket":          getattr(result, "order", 0),
-            "session":         self._get_current_session(),
-            "account_balance": account.balance if account else None,
-            "account_equity":  account.equity  if account else None,
-        }
+        if account is None:
+            log.warning("No account info — skipping loss-limit check")
+            return False
 
-        file_exists = Path(csv_path).exists()
-        with open(csv_path, "a", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=headers)
-            if not file_exists:
-                writer.writeheader()
-            writer.writerow(row)
+        session_pnl, _ = self._get_session_metrics(account)
+        if not self._session_start_equity:
+            return False
 
-        logging.info(f"[{symbol}] Trade logged → {csv_path}")
+        loss_limit = -(self._session_start_equity * DAILY_LOSS_LIMIT_PCT)
+        if session_pnl > loss_limit:
+            return False
+
+        log.warning(
+            f"Daily loss limit hit (${session_pnl:.2f} <= ${loss_limit:.2f}) — bot paused for today"
+        )
+        self.is_running = False
+        self._update_status({
+            "is_running":     False,
+            "trading_active": False,
+            "paused_reason":  "DAILY_LOSS_LIMIT",
+            "pnl_at_pause":   session_pnl,
+        })
+        return True
+
+    # ═══════════════════════════════════════════════════════════════
+    # MANUAL MODE — consume signals confirmed in the app
+    # ═══════════════════════════════════════════════════════════════
+
+    def _process_pending_signals(self) -> None:
+        """
+        Execute signals the user confirmed in the app, and expire stale ones.
+
+        The app writes status CONFIRMED/REJECTED onto users/<id>/pending_signals;
+        nothing else acts on those, so this is what makes MANUAL mode work.
+        """
+        if not self.firebase_enabled:
+            return
+
+        try:
+            pending = self.pending_signals_ref.get()
+        except Exception as e:
+            log.debug(f"Could not read pending signals: {e}")
+            return
+
+        if not isinstance(pending, dict):
+            return
+
+        now = datetime.now(timezone.utc).timestamp()
+
+        for key, signal in pending.items():
+            if not isinstance(signal, dict):
+                continue
+
+            status = str(signal.get("status", "")).upper()
+
+            if status == "PENDING":
+                expires_at = signal.get("expires_at")
+                try:
+                    expired = expires_at is not None and float(expires_at) < now
+                except (TypeError, ValueError):
+                    expired = True  # Unreadable timestamp — don't leave it hanging
+                if expired:
+                    log.info(f"[{signal.get('symbol', '?')}] Signal expired — no response in "
+                             f"{SIGNAL_EXPIRY_SECONDS}s")
+                    self._set_signal_status(key, "EXPIRED")
+                continue
+
+            if status != "CONFIRMED":
+                continue
+
+            symbol = signal.get("symbol")
+            if not symbol:
+                self._set_signal_status(key, "FAILED", error="Signal has no symbol")
+                continue
+
+            # A confirmation that arrived after expiry is stale — the entry
+            # price it was judged on is minutes old.
+            try:
+                if signal.get("expires_at") is not None and float(signal["expires_at"]) < now:
+                    log.warning(f"[{symbol}] Confirmation arrived after expiry — not executing")
+                    self._set_signal_status(key, "EXPIRED")
+                    continue
+            except (TypeError, ValueError):
+                pass
+
+            # Claim the signal before sending the order. If this write fails we
+            # skip it: executing without being able to record the outcome would
+            # re-execute the same signal on the next cycle.
+            if not self._claim_signal(key):
+                log.warning(f"[{symbol}] Could not claim signal — skipping this cycle")
+                continue
+
+            log.info(f"[{symbol}] User confirmed signal — executing")
+            result = place_order(symbol, signal, self._get_config(),
+                                 comment=f"Brave Manual {signal.get('direction', '')}")
+
+            if result["ok"]:
+                self._set_signal_status(key, "EXECUTED", ticket=result["ticket"],
+                                        filled_price=result["price"], lot=result["lot"])
+                self._push_alert({
+                    **signal,
+                    "alert_type":   "TRADE_EXECUTED",
+                    "ticket":       result["ticket"],
+                    "filled_price": result["price"],
+                    "lot":          result["lot"],
+                    "strategy":     signal.get("strategy_name", "Flow"),
+                })
+            else:
+                self._set_signal_status(key, "FAILED", error=result["error"])
+                self._push_alert({
+                    **signal,
+                    "alert_type": "EXECUTION_FAILED",
+                    "error":      result["error"],
+                })
+
+    def _claim_signal(self, key: str) -> bool:
+        """Mark a signal EXECUTING so a second cycle can't pick it up. False if the write failed."""
+        try:
+            self.pending_signals_ref.child(key).update({
+                "status":      "EXECUTING",
+                "claimed_at":  datetime.now(timezone.utc).isoformat(),
+            })
+            return True
+        except Exception as e:
+            log.error(f"Could not claim signal {key}: {e}")
+            return False
+
+    def _set_signal_status(self, key: str, status: str, **extra) -> None:
+        try:
+            self.pending_signals_ref.child(key).update({
+                "status":       status,
+                "resolved_at":  datetime.now(timezone.utc).isoformat(),
+                **extra,
+            })
+        except Exception as e:
+            log.error(f"Could not update signal {key} to {status}: {e}")
+
+    def _push_alert(self, payload: dict) -> None:
+        if not self.firebase_enabled:
+            return
+        try:
+            self.alerts_ref.push({**payload, "sent_at": datetime.now(timezone.utc).isoformat()})
+        except Exception as e:
+            log.debug(f"Alert push failed: {e}")
 
     # ═══════════════════════════════════════════════════════════════
     # UTILITIES
     # ═══════════════════════════════════════════════════════════════
 
     def _get_session_metrics(self, account) -> tuple[float, float]:
+        """Session P&L against the equity the day opened at."""
         if not account:
             return 0.0, 0.0
+
         today = datetime.now().date().isoformat()
         if self._last_session_date != today or self._session_start_equity is None:
             self._session_start_equity = account.equity
             self._last_session_date    = today
-            logging.info(f"Daily session started — Equity: ${self._session_start_equity:.2f}")
-        
+            log.info(f"Daily session started — Equity: ${self._session_start_equity:.2f}")
+
         session_pnl = account.equity - self._session_start_equity
-        session_pnl_pct = (session_pnl / self._session_start_equity * 100) if self._session_start_equity > 0 else 0.0
-        return session_pnl, session_pnl_pct
+        session_pct = (session_pnl / self._session_start_equity * 100) if self._session_start_equity else 0.0
+        return session_pnl, session_pct
 
     def _update_fast_status(self) -> None:
         if not self.firebase_enabled:
@@ -791,51 +775,42 @@ class BraveBot:
             account = mt5.account_info()
             if not account:
                 return
-            session_pnl, session_pnl_pct = self._get_session_metrics(account)
-            payload = {
+            session_pnl, session_pct = self._get_session_metrics(account)
+            self.status_ref.update({
                 "balance":         account.balance,
                 "equity":          account.equity,
                 "profit":          account.profit,
                 "open_positions":  self._count_positions(),
                 "session_pnl":     session_pnl,
-                "session_pnl_pct": session_pnl_pct,
-                "last_updated":    datetime.now().isoformat()
-            }
-            self.status_ref.update(payload)
-        except Exception:
-            pass
+                "session_pnl_pct": session_pct,
+                "last_updated":    datetime.now().isoformat(),
+            })
+        except Exception as e:
+            log.debug(f"Fast status update failed: {e}")
 
     def _count_positions(self, symbol: str | None = None) -> int:
-        """
-        Phase 2 fix: counts both active positions AND pending orders.
-        Previously only checked positions — caused duplicate pending
-        orders to stack on the same signal every 60-second cycle.
-        """
-        positions = mt5.positions_get(symbol=symbol) if symbol else mt5.positions_get()
-        orders    = mt5.orders_get(symbol=symbol)    if symbol else mt5.orders_get()
+        """Open positions AND pending orders — pending ones still consume risk."""
+        try:
+            positions = mt5.positions_get(symbol=symbol) if symbol else mt5.positions_get()
+            orders    = mt5.orders_get(symbol=symbol)    if symbol else mt5.orders_get()
+            return len(positions or ()) + len(orders or ())
+        except Exception as e:
+            log.debug(f"Position count failed: {e}")
+            return 0
 
-        return (len(positions) if positions else 0) + (len(orders) if orders else 0)
-
-    def _get_current_session(self) -> str:
-        """UTC session windows mapped for performance attribution."""
-        now_utc = datetime.now(timezone.utc).time()
-        
-        if self.LONDON_OPEN <= now_utc < self.LONDON_CLOSE:
-            return "LONDON"
-        if self.NY_OPEN <= now_utc < self.NY_CLOSE:
-            return "NEW_YORK"
-        
-        return "OTHER"
+    def _get_brave_config(self) -> dict:
+        if not self.firebase_enabled:
+            return {}
+        try:
+            config = self.brave_config_ref.get()
+            return config if isinstance(config, dict) else {}
+        except Exception as e:
+            log.debug(f"Could not read brave_config: {e}")
+            return {}
 
     def _get_config(self) -> dict:
-        if self.firebase_enabled:
-            try:
-                config = self.config_ref.get()
-                if config:
-                    return config
-            except Exception:
-                pass
-        return {
+        """Trading config from Firebase, falling back to config.py defaults."""
+        defaults = {
             "symbols":          SYMBOLS,
             "timeframe":        TIMEFRAME,
             "lot_size":         LOT_SIZE,
@@ -843,115 +818,57 @@ class BraveBot:
             "stop_loss_pips":   STOP_LOSS_PIPS,
             "take_profit_pips": TAKE_PROFIT_PIPS,
         }
+        if not self.firebase_enabled:
+            return defaults
+        try:
+            config = self.config_ref.get()
+            if isinstance(config, dict) and config:
+                return {**defaults, **config}
+        except Exception as e:
+            log.debug(f"Could not read bot_config: {e}")
+        return defaults
 
     def _get_execution_mode(self) -> str:
         """
-        Read execution_mode from Firebase brave_config.
-        Falls back to config.py default if Firebase unavailable.
-        Allows mobile app to switch AUTO/MANUAL without restarting bot.
+        Execution mode from Firebase so the app can switch AUTO/MANUAL without
+        a restart. Falls back to the last known mode when Firebase is down.
         """
-        if self.firebase_enabled:
-            try:
-                brave_config = self.brave_config_ref.get()
-                if brave_config and "execution_mode" in brave_config:
-                    mode = brave_config["execution_mode"].upper()
-                    if mode in ("AUTO", "MANUAL"):
-                        return mode
-            except Exception as e:
-                logging.debug(f"Could not read execution_mode: {e}")
+        brave_config = self._get_brave_config()
+        mode = str(brave_config.get("execution_mode", self.execution_mode)).upper()
+        if mode in ("AUTO", "MANUAL"):
+            self.execution_mode = mode
         return self.execution_mode
-
-    def _push_pending_signal(self, symbol: str, signal: dict) -> str | None:
-        """
-        Push a signal to Firebase as PENDING for MANUAL mode confirmation.
-        Returns the Firebase push key so we can listen for the response.
-        Mobile app reads this and shows Confirm/Reject buttons.
-        """
-        if not self.firebase_enabled:
-            logging.warning(f"[{symbol}] MANUAL mode but Firebase disabled — skipping signal")
-            return None
-        try:
-            pending_ref = db.reference(f"users/{USER_ID}/pending_signals")
-            entry = {
-                **signal,
-                "status":     "PENDING",
-                "expires_at": (
-                    datetime.now(timezone.utc).timestamp() + SIGNAL_EXPIRY_SECONDS
-                ),
-                "pushed_at":  datetime.now(timezone.utc).isoformat(),
-            }
-            result = pending_ref.push(entry)
-            logging.info(f"[{symbol}] MANUAL signal pushed — key: {result.key} | expires in {SIGNAL_EXPIRY_SECONDS}s")
-            return result.key
-        except Exception as e:
-            logging.error(f"[{symbol}] Failed to push pending signal: {e}")
-            return None
-
-    def _wait_for_confirmation(self, symbol: str, push_key: str) -> str:
-        """
-        Poll Firebase for human confirmation of a MANUAL signal.
-        Returns "CONFIRMED", "REJECTED", or "EXPIRED".
-        Polls every 5 seconds until SIGNAL_EXPIRY_SECONDS is reached.
-        """
-        import time as _time
-        deadline    = datetime.now(timezone.utc).timestamp() + SIGNAL_EXPIRY_SECONDS
-        pending_ref = db.reference(f"users/{USER_ID}/pending_signals/{push_key}")
-
-        logging.info(f"[{symbol}] Waiting for confirmation ({SIGNAL_EXPIRY_SECONDS}s timeout)...")
-
-        while datetime.now(timezone.utc).timestamp() < deadline:
-            try:
-                data = pending_ref.get()
-                if data:
-                    status = data.get("status", "PENDING").upper()
-                    if status == "CONFIRMED":
-                        logging.info(f"[{symbol}] Signal CONFIRMED by user")
-                        return "CONFIRMED"
-                    if status == "REJECTED":
-                        logging.info(f"[{symbol}] Signal REJECTED by user")
-                        return "REJECTED"
-            except Exception as e:
-                logging.debug(f"[{symbol}] Confirmation poll error: {e}")
-            _time.sleep(5)
-
-        logging.warning(f"[{symbol}] Signal EXPIRED — no response within {SIGNAL_EXPIRY_SECONDS}s")
-        try:
-            pending_ref.update({"status": "EXPIRED"})
-        except Exception:
-            pass
-        return "EXPIRED"
 
     def _update_status(self, data: dict) -> None:
         if not self.firebase_enabled:
             return
         try:
-            data["last_updated"] = datetime.now().isoformat()
-            self.status_ref.update(data)
+            self.status_ref.update({**data, "last_updated": datetime.now().isoformat()})
         except Exception as e:
-            # Phase 2: log at DEBUG level — Firebase SSE reconnects are noisy
-            logging.debug(f"Status update failed (will retry): {e}")
+            # Firebase SSE reconnects are noisy — debug level on purpose
+            log.debug(f"Status update failed (will retry): {e}")
 
     # ═══════════════════════════════════════════════════════════════
     # MAIN LOOP
     # ═══════════════════════════════════════════════════════════════
 
     def run(self) -> None:
-        logging.info("=" * 60)
-        logging.info("BRAVE BOT — Phase 2")
-        logging.info(f"Check interval:       {self.CHECK_INTERVAL}s")
-        logging.info(f"Health interval:      {self.HEALTH_CHECK_INTERVAL}s")
-        logging.info(f"News filter:          ENABLED (±{30} min around high-impact events)")
-        logging.info(f"Strategies available: {list(STRATEGY_REGISTRY.keys())}")
-        logging.info("=" * 60)
+        log.info("=" * 60)
+        log.info(BOT_VERSION)
+        log.info(f"Check interval:  {self.CHECK_INTERVAL}s")
+        log.info(f"Health interval: {self.HEALTH_CHECK_INTERVAL}s")
+        log.info(f"Execution mode:  {self._get_execution_mode()}")
+        log.info("News filter:     ENABLED (±30 min around high-impact events)")
+        log.info("=" * 60)
 
         self.is_running = True
-        self._update_status({"is_running": True})
+        self._update_status({"is_running": True, "bot_version": BOT_VERSION})
         self._health_check()
 
         self.active_pairs      = self._select_pairs(max_pairs=3)
         self.last_pair_refresh = datetime.now()
 
-        last_signal_check = 0
+        last_signal_check = 0.0
 
         try:
             while True:
@@ -959,43 +876,54 @@ class BraveBot:
 
                 if not self.is_running:
                     if now_ts - last_signal_check >= self.CHECK_INTERVAL:
-                        logging.info("Bot paused — waiting for start command...")
+                        log.info("Bot paused — waiting for start command...")
                         last_signal_check = now_ts
                     time_module.sleep(1)
                     continue
 
-                # Fast background sync
                 self._update_fast_status()
 
                 if now_ts - last_signal_check >= self.CHECK_INTERVAL:
-                    elapsed = (datetime.now() - self.last_health_check).total_seconds()
-                    if elapsed >= self.HEALTH_CHECK_INTERVAL:
-                        self._health_check()
+                    try:
+                        if (datetime.now() - self.last_health_check).total_seconds() >= self.HEALTH_CHECK_INTERVAL:
+                            self._health_check()
 
-                    config = self._get_config()
-                    self._check_signals(config)
+                        # Act on app confirmations before looking for new signals
+                        self._process_pending_signals()
+                        self._check_signals(self._get_config())
 
-                    logging.info(f"Sleeping {self.CHECK_INTERVAL}s (fast syncing in background)...\n")
+                    except Exception as e:
+                        # One bad cycle must not stop the bot
+                        log.error(f"Cycle error: {e}")
+                        traceback.print_exc()
+
+                    log.info(f"Sleeping {self.CHECK_INTERVAL}s (fast syncing in background)...\n")
                     last_signal_check = time_module.time()
 
                 time_module.sleep(1)
 
         except KeyboardInterrupt:
-            logging.info("Bot stopped (Ctrl+C)")
+            log.info("Bot stopped (Ctrl+C)")
         except Exception as e:
-            logging.error(f"Critical error: {e}")
+            log.error(f"Critical error: {e}")
             traceback.print_exc()
         finally:
             self.is_running = False
-            self._update_status({"is_running": False})
-            mt5.shutdown()
-            logging.info("Bot shut down cleanly")
+            self._update_status({"is_running": False, "trading_active": False})
+            try:
+                mt5.shutdown()
+            except Exception:
+                pass
+            log.info("Bot shut down cleanly")
 
 
 if __name__ == "__main__":
     try:
-        bot = BraveBot()
-        bot.run()
+        BraveBot().run()
+    except ConfigError as e:
+        log.error(str(e))
+        sys.exit(1)
     except Exception as e:
-        logging.error(f"Failed to start: {e}")
+        log.error(f"Failed to start: {e}")
         traceback.print_exc()
+        sys.exit(1)

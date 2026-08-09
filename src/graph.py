@@ -1,89 +1,140 @@
 """
-graph.py — Brave v3.0 LangGraph Agent
+graph.py — Brave v3.0 LangGraph agent.
 
 Pipeline:
     DETECT → ANALYSE → RISK_CHECK → EXECUTE or HITL
 
 DETECT:     Flow strategy scans the symbol for a signal
-ANALYSE:    DeepSeek reads Finnhub headlines and returns CONFIRM/OPPOSE/UNCERTAIN
-RISK_CHECK: Pure Python — daily loss limit, max positions, lot size
-EXECUTE:    MT5 order placed, Firebase alert written
+ANALYSE:    DeepSeek reads Finnhub headlines, returns CONFIRM/OPPOSE/UNCERTAIN
+RISK_CHECK: Pure Python — open positions, daily loss limit, signal sanity
+EXECUTE:    Order placed through trade_executor, Firebase alert written
 HITL:       Signal pushed to Firebase pending_signals for human confirmation
 
 Routing:
-    DETECT   → no signal          → END
-    ANALYSE  → OPPOSE             → END
-    ANALYSE  → CONFIRM/UNCERTAIN  → RISK_CHECK
-    RISK_CHECK → fail             → END
-    RISK_CHECK → pass + CONFIRM   → EXECUTE
-    RISK_CHECK → pass + UNCERTAIN → HITL
+    DETECT     → no signal            → END
+    ANALYSE    → OPPOSE               → END
+    ANALYSE    → CONFIRM/UNCERTAIN    → RISK_CHECK
+    RISK_CHECK → fail                 → END
+    RISK_CHECK → MANUAL mode          → HITL
+    RISK_CHECK → pass + UNCERTAIN     → HITL
+    RISK_CHECK → pass + CONFIRM       → EXECUTE
+
+Every node is total: it catches its own exceptions and returns a state that
+routes safely to END rather than letting the loop in bot.py crash.
 """
 
 import logging
-import traceback
 import time
+import traceback
 from datetime import datetime, timezone
-from typing import TypedDict, Literal
+from typing import Literal, TypedDict
 
-from langgraph.graph import StateGraph, END
 import MetaTrader5 as mt5
+from langgraph.graph import END, StateGraph
 
-from news_fetcher import fetch_news_for_symbol, format_headlines_for_llm
+from config import DAILY_LOSS_LIMIT_PCT, MAX_TRADES, SIGNAL_EXPIRY_SECONDS
 from flow import Flow
+from news_fetcher import fetch_news_for_symbol, format_headlines_for_llm
+from trade_executor import ExecutionError, place_order, validate_signal
+
+log = logging.getLogger(__name__)
+
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_MODEL    = "deepseek-chat"
+DEEPSEEK_TIMEOUT  = 30      # Seconds — the loop must not hang on the API
+DEEPSEEK_ATTEMPTS = 2
+VALID_VERDICTS    = ("CONFIRM", "OPPOSE", "UNCERTAIN")
 
 
-# ── State ─────────────────────────────────────────────────────────
+# ── State ─────────────────────────────────────────────────────────────
 class BraveState(TypedDict):
     symbol:           str
     config:           dict
+    execution_mode:   str
     signal:           dict | None
     sentiment:        Literal["CONFIRM", "OPPOSE", "UNCERTAIN"] | None
     sentiment_reason: str
+    headlines:        list[dict]
     risk_ok:          bool
     risk_reason:      str
     abort:            bool
     abort_reason:     str
     hitl_required:    bool
+    executed:         bool
     firebase:         dict
 
 
-# ── Node 1: DETECT ────────────────────────────────────────────────
+def _abort(state: BraveState, reason: str) -> BraveState:
+    return {**state, "signal": state.get("signal"), "abort": True, "abort_reason": reason}
+
+
+# ── Node 1: DETECT ────────────────────────────────────────────────────
 def node_detect(state: BraveState) -> BraveState:
     symbol = state["symbol"]
-    logging.info(f"[DETECT] Running Flow on {symbol}...")
+    log.info(f"[DETECT] Running Flow on {symbol}...")
+
     try:
-        strategy = Flow(state["config"])
-        signal   = strategy.analyze(symbol)
-        if signal is None:
-            logging.info(f"[DETECT] {symbol}: No signal")
-            return {**state, "signal": None, "abort": True, "abort_reason": "No signal from Flow"}
-        logging.info(f"[DETECT] {symbol}: {signal['direction']} signal — Entry {signal['entry_price']}")
-        return {**state, "signal": signal, "abort": False}
+        signal = Flow(state["config"]).analyze(symbol)
     except Exception as e:
-        logging.error(f"[DETECT] Error: {e}")
+        log.error(f"[DETECT] {symbol}: Strategy error — {e}")
         traceback.print_exc()
-        return {**state, "signal": None, "abort": True, "abort_reason": str(e)}
+        return _abort(state, f"Strategy error: {e}")
+
+    if signal is None:
+        log.info(f"[DETECT] {symbol}: No signal")
+        return _abort(state, "No signal from Flow")
+
+    # Reject a malformed signal here rather than at the broker
+    try:
+        signal = validate_signal(symbol, signal)
+    except ExecutionError as e:
+        log.warning(f"[DETECT] {symbol}: Rejected malformed signal — {e}")
+        return _abort(state, str(e))
+
+    log.info(f"[DETECT] {symbol}: {signal['direction']} signal — Entry {signal['entry_price']}")
+    return {**state, "signal": signal, "abort": False, "abort_reason": ""}
 
 
-# ── Node 2: ANALYSE ───────────────────────────────────────────────
+# ── Node 2: ANALYSE ───────────────────────────────────────────────────
 def node_analyse(state: BraveState) -> BraveState:
-    from openai import OpenAI
-    from config import DEEPSEEK_API_KEY
-
     symbol    = state["symbol"]
     direction = state["signal"]["direction"]
-    logging.info(f"[ANALYSE] Fetching news and querying DeepSeek for {symbol}...")
+    log.info(f"[ANALYSE] Fetching news and querying DeepSeek for {symbol}...")
+
+    articles = []
+    try:
+        articles = fetch_news_for_symbol(symbol)
+        verdict, reason = _ask_deepseek(symbol, direction, articles)
+    except Exception as e:
+        log.error(f"[ANALYSE] {symbol}: {e}")
+        verdict, reason = "UNCERTAIN", f"News analysis failed: {e}"
+
+    log.info(f"[ANALYSE] {symbol}: {verdict} — {reason}")
+    _publish_news_analysis(state, verdict, reason, direction, articles)
+
+    return {**state, "sentiment": verdict, "sentiment_reason": reason, "headlines": articles}
+
+
+def _ask_deepseek(symbol: str, direction: str, articles: list[dict]) -> tuple[str, str]:
+    """
+    Ask DeepSeek whether the news supports the trade.
+
+    Returns (verdict, reason). Falls back to UNCERTAIN — never OPPOSE or
+    CONFIRM — when the API is unreachable, so an outage neither blocks nor
+    green-lights trades on its own.
+    """
+    from config import DEEPSEEK_API_KEY
+
+    if not DEEPSEEK_API_KEY:
+        return "UNCERTAIN", "DEEPSEEK_API_KEY not configured"
 
     try:
-        articles  = fetch_news_for_symbol(symbol)
-        headlines = format_headlines_for_llm(symbol, articles)
+        from openai import OpenAI
+    except ImportError as e:
+        return "UNCERTAIN", f"openai package not installed: {e}"
 
-        client = OpenAI(
-            api_key=DEEPSEEK_API_KEY,
-            base_url="https://api.deepseek.com",
-        )
-
-        prompt = f"""You are a professional forex news analyst.
+    headlines = format_headlines_for_llm(symbol, articles)
+    prompt = f"""You are a professional forex news analyst.
 
 A trading system wants to place a {direction} trade on {symbol}.
 
@@ -104,168 +155,223 @@ CONFIRM
 Fed hawkish tone supports dollar strength, aligning with the BUY signal on USDCHF.
 """
 
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=120,
-            temperature=0.1,
-        )
+    client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL, timeout=DEEPSEEK_TIMEOUT)
+    last_error = "unknown error"
 
-        text    = response.choices[0].message.content.strip()
-        lines   = text.split("\n", 1)
-        verdict = lines[0].strip().upper()
-        reason  = lines[1].strip() if len(lines) > 1 else "No reason provided"
+    for attempt in range(1, DEEPSEEK_ATTEMPTS + 1):
+        try:
+            response = client.chat.completions.create(
+                model=DEEPSEEK_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=120,
+                temperature=0.1,
+            )
+            return _parse_verdict(symbol, response)
 
-        if verdict not in ("CONFIRM", "OPPOSE", "UNCERTAIN"):
-            logging.warning(f"[ANALYSE] Unexpected verdict: {verdict} — defaulting to UNCERTAIN")
-            verdict = "UNCERTAIN"
-            reason  = f"Unexpected response: {text[:100]}"
+        except Exception as e:
+            last_error = str(e)
+            log.warning(f"[ANALYSE] {symbol}: DeepSeek attempt {attempt}/{DEEPSEEK_ATTEMPTS} failed — {e}")
+            if attempt < DEEPSEEK_ATTEMPTS:
+                time.sleep(2)
 
-        logging.info(f"[ANALYSE] {symbol}: {verdict} — {reason}")
-        return {**state, "sentiment": verdict, "sentiment_reason": reason}
+    return "UNCERTAIN", f"DeepSeek unavailable: {last_error}"
 
+
+def _parse_verdict(symbol: str, response) -> tuple[str, str]:
+    """Pull the verdict and reason out of a DeepSeek completion, defensively."""
+    choices = getattr(response, "choices", None)
+    if not choices:
+        return "UNCERTAIN", "DeepSeek returned no choices"
+
+    content = getattr(choices[0].message, "content", None)
+    if not content or not content.strip():
+        return "UNCERTAIN", "DeepSeek returned an empty response"
+
+    lines   = content.strip().split("\n", 1)
+    verdict = lines[0].strip().upper().strip(".:*# ")
+    reason  = lines[1].strip() if len(lines) > 1 else "No reason provided"
+
+    if verdict not in VALID_VERDICTS:
+        # Tolerate a verdict wrapped in prose before giving up
+        match = next((v for v in VALID_VERDICTS if v in content.upper()), None)
+        if match:
+            return match, reason or content.strip()[:200]
+        log.warning(f"[ANALYSE] {symbol}: Unexpected verdict '{verdict}' — defaulting to UNCERTAIN")
+        return "UNCERTAIN", f"Unexpected response: {content.strip()[:150]}"
+
+    return verdict, reason
+
+
+def _publish_news_analysis(state: BraveState, verdict: str, reason: str,
+                           direction: str, articles: list[dict]) -> None:
+    """Publish the DeepSeek verdict and Finnhub headlines for the app Insights screen."""
+    ref = state.get("firebase", {}).get("news_analysis_ref")
+    if ref is None:
+        return
+    try:
+        ref.child(state["symbol"]).set({
+            "symbol":        state["symbol"],
+            "direction":     direction,
+            "verdict":       verdict,
+            "reason":        reason,
+            "headlines":     [
+                {
+                    "headline": a.get("headline", ""),
+                    "summary":  a.get("summary", "")[:200],
+                    "url":      a.get("url", ""),
+                    "datetime": a.get("datetime", 0),
+                }
+                for a in articles[:5]
+            ],
+            "article_count": len(articles),
+            "news_source":   "Finnhub",
+            "model":         DEEPSEEK_MODEL,
+            "updated_at":    datetime.now(timezone.utc).isoformat(),
+        })
     except Exception as e:
-        logging.error(f"[ANALYSE] Error: {e}")
-        return {**state, "sentiment": "UNCERTAIN", "sentiment_reason": f"Analysis failed: {e}"}
+        log.error(f"[ANALYSE] Failed to publish news analysis: {e}")
 
 
-# ── Node 3: RISK_CHECK ────────────────────────────────────────────
+# ── Node 3: RISK_CHECK ────────────────────────────────────────────────
 def node_risk_check(state: BraveState) -> BraveState:
     symbol = state["symbol"]
     config = state["config"]
     signal = state["signal"]
-    logging.info(f"[RISK_CHECK] Checking {symbol}...")
+    log.info(f"[RISK_CHECK] Checking {symbol}...")
 
     try:
-        # Max positions per symbol
-        max_trades = config.get("max_trades_per_symbol", 2)
-        positions  = mt5.positions_get(symbol=symbol)
-        if positions and len(positions) >= max_trades:
-            return {**state, "risk_ok": False,
-                    "risk_reason": f"Max trades ({max_trades}) already open on {symbol}"}
+        # Positions AND pending orders — otherwise the same signal stacks
+        # a new order every 60-second cycle.
+        max_trades = int(config.get("max_trades", MAX_TRADES) or MAX_TRADES)
+        positions  = mt5.positions_get(symbol=symbol) or ()
+        orders     = mt5.orders_get(symbol=symbol) or ()
+        open_count = len(positions) + len(orders)
+        if open_count >= max_trades:
+            return _risk_fail(state, f"Max trades ({max_trades}) already open on {symbol}")
 
-        # Daily loss limit
-        daily_limit = config.get("daily_loss_limit_pct", 0.05)
-        account     = mt5.account_info()
-        if account:
-            balance  = account.balance
-            equity   = account.equity
-            loss_pct = (balance - equity) / balance if balance > 0 else 0
+        account = mt5.account_info()
+        if account is None:
+            return _risk_fail(state, "No MT5 account info — terminal disconnected?")
+        if not account.trade_allowed:
+            return _risk_fail(state, "Trading not allowed on this account")
+
+        daily_limit = float(config.get("daily_loss_limit_pct", DAILY_LOSS_LIMIT_PCT))
+        if account.balance > 0:
+            loss_pct = (account.balance - account.equity) / account.balance
             if loss_pct >= daily_limit:
-                return {**state, "risk_ok": False,
-                        "risk_reason": f"Daily loss limit hit ({loss_pct:.1%} >= {daily_limit:.1%})"}
+                return _risk_fail(state, f"Daily loss limit hit ({loss_pct:.1%} >= {daily_limit:.1%})")
 
-        # Lot size sanity
-        lot = float(signal.get("lot_size") or config.get("lot_size", 0.01))
-        if lot <= 0 or lot > 10:
-            return {**state, "risk_ok": False, "risk_reason": f"Invalid lot size: {lot}"}
+        # Signal sanity — same rules the executor enforces, checked early
+        validate_signal(symbol, signal)
 
-        logging.info(f"[RISK_CHECK] {symbol}: All checks passed")
+        log.info(f"[RISK_CHECK] {symbol}: All checks passed")
         return {**state, "risk_ok": True, "risk_reason": "All risk checks passed"}
 
+    except ExecutionError as e:
+        return _risk_fail(state, str(e))
     except Exception as e:
-        logging.error(f"[RISK_CHECK] Error: {e}")
-        return {**state, "risk_ok": False, "risk_reason": str(e)}
+        log.error(f"[RISK_CHECK] Error: {e}")
+        traceback.print_exc()
+        return _risk_fail(state, f"Risk check error: {e}")
 
 
-# ── Node 4a: EXECUTE ──────────────────────────────────────────────
+def _risk_fail(state: BraveState, reason: str) -> BraveState:
+    return {**state, "risk_ok": False, "risk_reason": reason}
+
+
+# ── Node 4a: EXECUTE ──────────────────────────────────────────────────
 def node_execute(state: BraveState) -> BraveState:
     symbol = state["symbol"]
     signal = state["signal"]
-    fb     = state.get("firebase", {})
-    logging.info(f"[EXECUTE] Placing {signal['direction']} on {symbol}...")
+    log.info(f"[EXECUTE] Placing {signal['direction']} on {symbol}...")
 
-    try:
-        direction  = signal["direction"]
-        lot        = float(signal.get("lot_size") or state["config"].get("lot_size", 0.01))
-        tick       = mt5.symbol_info_tick(symbol)
-        price      = tick.ask if direction == "BUY" else tick.bid
-        order_type = mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL
+    result = place_order(symbol, signal, state["config"],
+                         comment=f"Brave Flow {signal['direction']}")
 
-        request = {
-            "action":       mt5.TRADE_ACTION_DEAL,
-            "symbol":       symbol,
-            "volume":       lot,
-            "type":         order_type,
-            "price":        price,
-            "sl":           float(signal["suggested_sl"]),
-            "tp":           float(signal["suggested_tp"]),
-            "deviation":    10,
-            "magic":        234000,
-            "comment":      f"Brave Flow {direction}",
-            "type_time":    mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
-        }
+    alerts_ref = state.get("firebase", {}).get("alerts_ref")
+    if alerts_ref is not None:
+        try:
+            alerts_ref.push({
+                **signal,
+                "alert_type":       "TRADE_EXECUTED" if result["ok"] else "EXECUTION_FAILED",
+                "sentiment":        state.get("sentiment"),
+                "sentiment_reason": state.get("sentiment_reason"),
+                "ticket":           result["ticket"],
+                "filled_price":     result["price"],
+                "lot":              result["lot"],
+                "strategy":         signal.get("strategy_name", "Flow"),
+                "error":            result["error"],
+                "sent_at":          datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception as e:
+            log.error(f"[EXECUTE] {symbol}: Alert push failed: {e}")
 
-        result = mt5.order_send(request)
-
-        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-            logging.info(f"[EXECUTE]  Order placed — ticket {result.order}")
-            alerts_ref = fb.get("alerts_ref")
-            if alerts_ref:
-                alerts_ref.push({
-                    **signal,
-                    "alert_type":       "FLOW_EXECUTE",
-                    "sentiment":        state.get("sentiment"),
-                    "sentiment_reason": state.get("sentiment_reason"),
-                    "mt5_ticket":       result.order,
-                    "sent_at":          datetime.now(timezone.utc).isoformat(),
-                })
-        else:
-            code = result.retcode if result else "unknown"
-            logging.error(f"[EXECUTE]  Order failed — retcode {code}")
-
-    except Exception as e:
-        logging.error(f"[EXECUTE] Error: {e}")
-        traceback.print_exc()
-
-    return state
+    return {**state, "executed": result["ok"]}
 
 
-# ── Node 4b: HITL ─────────────────────────────────────────────────
+# ── Node 4b: HITL ─────────────────────────────────────────────────────
 def node_hitl(state: BraveState) -> BraveState:
     symbol = state["symbol"]
     signal = state["signal"]
-    fb     = state.get("firebase", {})
-    logging.info(f"[HITL] Pushing {symbol} to pending_signals — sentiment UNCERTAIN")
+    reason = (
+        "Manual execution mode"
+        if str(state.get("execution_mode", "AUTO")).upper() == "MANUAL"
+        else state.get("sentiment_reason", "News sentiment uncertain")
+    )
+    log.info(f"[HITL] Pushing {symbol} to pending_signals — {reason}")
+
+    pending_ref = state.get("firebase", {}).get("pending_signals_ref")
+    if pending_ref is None:
+        log.warning(f"[HITL] {symbol}: Firebase unavailable — signal dropped")
+        return {**state, "hitl_required": False}
 
     try:
-        from config import SIGNAL_EXPIRY_SECONDS
-        pending_ref = fb.get("pending_signals_ref")
-        if pending_ref:
-            pending_ref.push({
-                **signal,
-                "status":           "PENDING",
-                "hitl_reason":      state.get("sentiment_reason", "Sentiment uncertain"),
-                "pushed_at":        datetime.now(timezone.utc).isoformat(),
-                "expires_at":       time.time() + SIGNAL_EXPIRY_SECONDS,
-            })
-            logging.info(f"[HITL] Signal pushed — expires in {SIGNAL_EXPIRY_SECONDS}s")
+        pending_ref.push({
+            **signal,
+            "status":       "PENDING",
+            "hitl_reason":  reason,
+            "sentiment":    state.get("sentiment"),
+            "pushed_at":    datetime.now(timezone.utc).isoformat(),
+            "expires_at":   datetime.now(timezone.utc).timestamp() + SIGNAL_EXPIRY_SECONDS,
+        })
+        log.info(f"[HITL] {symbol}: Signal pushed — expires in {SIGNAL_EXPIRY_SECONDS}s")
+        return {**state, "hitl_required": True}
     except Exception as e:
-        logging.error(f"[HITL] Error: {e}")
+        log.error(f"[HITL] {symbol}: Failed to push pending signal: {e}")
+        return {**state, "hitl_required": False}
 
-    return {**state, "hitl_required": True}
 
-
-# ── Routing ───────────────────────────────────────────────────────
+# ── Routing ───────────────────────────────────────────────────────────
 def route_after_detect(state: BraveState) -> str:
-    return END if state.get("abort") else "analyse"
+    return END if state.get("abort") or not state.get("signal") else "analyse"
+
 
 def route_after_analyse(state: BraveState) -> str:
     if state.get("sentiment") == "OPPOSE":
-        logging.info(f"[ROUTE] {state['symbol']}: OPPOSE — trade aborted")
+        log.info(f"[ROUTE] {state['symbol']}: OPPOSE — trade aborted")
         return END
     return "risk_check"
 
+
 def route_after_risk(state: BraveState) -> str:
     if not state.get("risk_ok"):
-        logging.info(f"[ROUTE] {state['symbol']}: Risk failed — {state.get('risk_reason')}")
+        log.info(f"[ROUTE] {state['symbol']}: Risk failed — {state.get('risk_reason')}")
         return END
+    if str(state.get("execution_mode", "AUTO")).upper() == "MANUAL":
+        return "hitl"
     return "hitl" if state.get("sentiment") == "UNCERTAIN" else "execute"
 
 
-# ── Build ─────────────────────────────────────────────────────────
+# ── Build ─────────────────────────────────────────────────────────────
+_GRAPH = None
+
+
 def build_brave_graph():
+    """Compile the graph once and reuse it — compiling per symbol per cycle is waste."""
+    global _GRAPH
+    if _GRAPH is not None:
+        return _GRAPH
+
     g = StateGraph(BraveState)
 
     g.add_node("detect",     node_detect)
@@ -276,33 +382,42 @@ def build_brave_graph():
 
     g.set_entry_point("detect")
 
-    g.add_conditional_edges("detect",     route_after_detect,
-                            {"analyse": "analyse", END: END})
-    g.add_conditional_edges("analyse",    route_after_analyse,
-                            {"risk_check": "risk_check", END: END})
+    g.add_conditional_edges("detect",     route_after_detect,  {"analyse": "analyse", END: END})
+    g.add_conditional_edges("analyse",    route_after_analyse, {"risk_check": "risk_check", END: END})
     g.add_conditional_edges("risk_check", route_after_risk,
                             {"execute": "execute", "hitl": "hitl", END: END})
 
     g.add_edge("execute", END)
     g.add_edge("hitl",    END)
 
-    return g.compile()
+    _GRAPH = g.compile()
+    return _GRAPH
 
 
-# ── Entry point ───────────────────────────────────────────────────
-def run_brave_graph(symbol: str, config: dict, firebase: dict) -> BraveState:
-    """Called by bot.py for each symbol each cycle."""
-    graph = build_brave_graph()
-    return graph.invoke({
+# ── Entry point ───────────────────────────────────────────────────────
+def run_brave_graph(symbol: str, config: dict, firebase: dict,
+                    execution_mode: str = "AUTO") -> BraveState:
+    """Called by bot.py for each symbol each cycle. Never raises."""
+    initial: BraveState = {
         "symbol":           symbol,
-        "config":           config,
+        "config":           config or {},
+        "execution_mode":   str(execution_mode or "AUTO").upper(),
         "signal":           None,
         "sentiment":        None,
         "sentiment_reason": "",
+        "headlines":        [],
         "risk_ok":          False,
         "risk_reason":      "",
         "abort":            False,
         "abort_reason":     "",
         "hitl_required":    False,
-        "firebase":         firebase,
-    })
+        "executed":         False,
+        "firebase":         firebase or {},
+    }
+
+    try:
+        return build_brave_graph().invoke(initial)
+    except Exception as e:
+        log.error(f"[GRAPH] {symbol}: Pipeline failed — {e}")
+        traceback.print_exc()
+        return {**initial, "abort": True, "abort_reason": f"Pipeline error: {e}"}

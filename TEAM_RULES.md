@@ -68,7 +68,7 @@ if DRY_RUN:
 
 ### 2.4 Per‑Strategy Sanity Test
 
-At the bottom of each strategy file (example: `thunder.py`):
+At the bottom of each strategy file (example: `flow.py`):
 
 ```python
 if __name__ == "__main__":
@@ -78,8 +78,8 @@ if __name__ == "__main__":
     mt5.initialize()
     mt5.login(MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER)
 
-    t = Thunder({"lot_size": 0.01})
-    result = t.analyze("EURUSD")
+    f = Flow({"lot_size": 0.01})
+    result = f.analyze("EURUSD")
     print("Signal:", result)
 
     mt5.shutdown()
@@ -88,7 +88,7 @@ if __name__ == "__main__":
 Run directly:
 
 ```powershell
-.venv\Scripts\python src\thunder.py
+& ".\.venv\Scripts\python.exe" src\flow.py
 ```
 
 **Rule:** After editing a strategy file, run it directly and fix any crash or bad output **before** running `bot.py`.

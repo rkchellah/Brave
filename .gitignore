@@ -44,4 +44,9 @@ brave-app/.expo/
 brave-app/.env
 
 # Test files (optional)
-test_*.py
+test_*.py
+# Legacy sentiment service logs
+sentiment_log*
+
+# Python cache
+__pycache__

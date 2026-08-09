@@ -1,4 +1,4 @@
-# QuantifyX — Project Rules
+# Brave — Project Rules
 > These rules apply to every file, every commit, every conversation.
 
 ---
@@ -8,7 +8,7 @@
 - Python only. Type hints enforced where possible.
 - Clean, well-structured code. No unnecessary complexity.
 - Comments explain *why*, never *what*.
-- No credentials, keys, or secrets ever hardcoded — always use `.env` via `python-dotenv`.
+- No credentials, keys, or secrets ever hardcoded — environment variables first, `config.py` as local fallback, never committed.
 - Every strategy must follow the Strategy Contract in ARCHITECTURE.md.
 - No strategy runs without defined SL, TP, and RR on every signal.
 - Every trade action must be logged.
@@ -27,11 +27,13 @@
 ## Stack
 
 - **Language:** Python 3.9+
-- **Trading Execution:** Kraken REST API via `krakenex`
-- **Market Data:** Kraken public OHLCV API + PRISM API
+- **Orchestration:** LangGraph
+- **Trading Execution:** MetaTrader 5 Python API
+- **Market Data:** MT5 H1 + M15 rates
+- **News:** Finnhub headlines + DeepSeek analysis, ForexFactory event calendar
 - **Database:** Firebase Realtime Database via `firebase-admin`
 - **Math:** NumPy
-- **Secrets:** `.env` file via `python-dotenv` — never committed
+- **Secrets:** environment variables, `config.py` fallback — never committed
 - **Dev Environment:** Windows PowerShell
 
 ---
@@ -50,11 +52,13 @@
 
 ## Security
 
-- Never commit `.env`, `serviceAccountKey.json`, `config.py`, or any file with credentials
-- All three are in `.gitignore` — verify before every push
-- Kraken API keys must never have Withdraw permissions enabled
+- Never commit `serviceAccountKey.json`, `config.py`, or any file with credentials
+- Both are in `.gitignore` — verify before every push
+- MT5 accounts used for testing must be demo accounts until the pipeline is verified live
+- Firebase Realtime Database rules must be scoped to the owning UID — `mt5_config` holds
+  the broker password in plaintext
 - Do not share API keys in chat, Discord, or any public channel
-- Rotate keys immediately if accidentally exposed (as done on Apr 3 2026)
+- Rotate keys immediately if accidentally exposed
 
 ---
 

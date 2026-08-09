@@ -1,25 +1,25 @@
-# QuantifyX — Architecture Document
+# Brave — Architecture Document
 > Read this before touching any file. For AI agents and developers.
 
 ---
 
-## What QuantifyX Is
+## What Brave Is
 
-QuantifyX is an autonomous crypto trading agent that runs the **Frost** mean reversion strategy on Kraken spot markets.
+Brave is an autonomous forex trading agent. It runs the **Flow** strategy on MetaTrader 5,
+checks every setup against recent news with DeepSeek, and either places the order or asks
+the trader to confirm it from a mobile app.
 
-It was originally built as **Brave** — an MT5 forex trading bot. The Frost strategy was ported from MT5/Forex to Kraken crypto by:
-- Replacing the MT5 data feed with Kraken's public OHLCV REST API
-- Replacing MT5 `order_send()` with `krakenex` REST API calls
-- Recalibrating pip/point thresholds from forex pips to crypto dollar units
-
-The core strategy logic (MA, ATR, trend detection, signal building) is **unchanged** from the original Frost implementation.
+The decision pipeline is a LangGraph state machine. The runtime around it — broker and
+Firebase connections, market sessions, pair selection, health — lives in `bot.py`. Order
+placement is isolated in `trade_executor.py` so live trading and human-confirmed trading
+take exactly the same code path.
 
 ---
 
 ## Project Rules
 
 - Python only. Type hints enforced.
-- No credentials ever hardcoded — always use `.env` via `python-dotenv`
+- No credentials ever hardcoded — environment variables first, `config.py` as local fallback
 - Comments explain *why*, never *what*
 - Every trade action must be logged
 - No strategy runs without defined SL, TP, and RR
@@ -32,23 +32,23 @@ The core strategy logic (MA, ATR, trend detection, signal building) is **unchang
 ## Repository Structure
 
 ```
-QuantifyX/
+Brave/
 ├── src/
-│   ├── frost_kraken.py      # Frost strategy — Kraken port
-│   ├── executor.py          # Kraken order execution via krakenex
-│   ├── agent.py             # Main loop
-│   ├── firebase_logger.py   # Firebase signal/trade logging
-│   ├── manage_config.py     # Config manager utility
-│   └── setup_firebase.py    # One-time Firebase setup
+│   ├── bot.py               # Main loop, MT5 + Firebase init, credential resolution
+│   ├── graph.py             # LangGraph pipeline (DETECT→ANALYSE→RISK_CHECK→EXECUTE/HITL)
+│   ├── flow.py              # Flow strategy — H1 trend + M15 sweep+reclaim
+│   ├── trade_executor.py    # Signal validation, risk sizing, MT5 order placement
+│   ├── news_fetcher.py      # Finnhub headlines + DeepSeek prompt formatting
+│   ├── news_filter.py       # ForexFactory high-impact event blackout windows
+│   └── seed_mt5_config.py   # One-time broker credential seed (deletable)
+├── scripts/
+│   └── clear_pending_signals.py   # One-time HITL queue cleanup
 ├── backtest/                # Backtesting scripts and CSV results
-├── brave-app/               # React Native mobile app (optional)
-├── logs/                    # Runtime logs (auto-generated)
-├── .env                     # API keys (never committed)
-├── config.py                # App config
-├── serviceAccountKey.json   # Firebase key (never committed)
-├── test_connection.py       # Kraken + PRISM connection test
-├── test_frost.py            # Full pipeline test (Frost + Executor)
-└── docs/                    # README, ARCHITECTURE, CHECKLIST etc.
+├── brave-app/               # React Native mobile app
+├── logs/                    # Runtime logs and trade CSVs (auto-generated)
+├── config.py                # Config and credentials (never committed)
+├── requirements.txt         # Pinned Python dependencies
+└── serviceAccountKey.json   # Firebase key (never committed)
 ```
 
 ---
@@ -58,106 +58,142 @@ QuantifyX/
 | Layer | Technology |
 |---|---|
 | Language | Python 3.9+ |
-| Trading Execution | Kraken REST API via `krakenex 2.2.2` |
-| Market Data (OHLCV) | Kraken public REST — `/0/public/OHLC` |
-| Market Data (Signals) | PRISM API — `api.prismapi.ai` |
+| Orchestration | LangGraph 1.2.9 |
+| Trading Execution | MetaTrader 5 Python API (`MetaTrader5`) |
+| Market Data | MT5 `copy_rates_from_pos()` — H1 and M15 |
+| News Headlines | Finnhub (`finnhub-python`) |
+| News Analysis | DeepSeek `deepseek-chat` via the OpenAI-compatible client |
+| Event Calendar | ForexFactory weekly JSON (`requests`) |
 | Database | Firebase Realtime Database (`firebase-admin`) |
 | Math | NumPy |
-| Secrets | `.env` + `python-dotenv` |
-| Mobile App | React Native + Expo SDK (brave-app, optional) |
+| Secrets | Environment variables, `config.py` fallback |
+| Mobile App | React Native + Expo (`brave-app`) |
 
 ---
 
 ## Data Flow
 
 ```
-Kraken Public OHLCV API
-        ↓
-   frost_kraken.py
-   (MA, ATR, trend, deviation checks)
-        ↓
-   Signal dict or None
-        ↓
-   executor.py
-   (krakenex AddOrder)
-        ↓
-   Kraken Exchange
-        ↓
-   firebase_logger.py
-   (log to Firebase)
+        MT5 (H1 + M15 rates)
+                ↓
+        flow.py — analyze()
+                ↓  signal dict or None
+        graph.py — DETECT
+                ↓
+        Finnhub headlines → DeepSeek → CONFIRM / OPPOSE / UNCERTAIN
+        graph.py — ANALYSE                    ↓
+                ↓                      news_analysis/ (Firebase → Insights screen)
+        graph.py — RISK_CHECK
+        (open positions + orders, daily loss limit, signal sanity)
+                ↓
+        ┌───────┴────────┐
+   CONFIRM + AUTO    UNCERTAIN or MANUAL
+        ↓                 ↓
+  trade_executor    pending_signals/ (Firebase)
+   .place_order()         ↓
+        ↓          mobile app: Confirm / Reject
+    MT5 order             ↓
+        ↓          bot.py — _process_pending_signals()
+        ↓                 └→ trade_executor.place_order()
+   alerts/ + logs/trades/*.csv
 ```
 
 ---
 
-## Frost Strategy (`src/frost_kraken.py`)
+## LangGraph Pipeline (`src/graph.py`)
 
-**Origin:** Ported from `src/frost.py` (Brave MT5 bot)
-**Type:** Mean Reversion / Counter-Trend Scalping
-**Session:** Asian only — 00:00 to 06:00 UTC, no new entries after 05:30 UTC
-**Pairs:** XBTUSD, ETHUSD on Kraken
+Five nodes over a `BraveState` TypedDict. Every node catches its own exceptions and
+returns a state that routes safely to `END` — one bad symbol never stops the loop.
 
-### Logic (unchanged from original)
-1. Session filter — Asian session only
-2. Fetch M15 OHLCV candles from Kraken public API
-3. ATR range check — skip if market too volatile or too dead
-4. Calculate 20-period MA and price deviation
-5. Deviation threshold check — must be between MIN and MAX
-6. Trend filter — skip if linear regression slope too steep
-7. Generate mean reversion signal — fade price back toward MA
-
-### What Changed vs Original Frost
-| Component | Original (Brave/MT5) | QuantifyX (Kraken) |
+| Node | Responsibility | Failure behaviour |
 |---|---|---|
-| Data source | `mt5.copy_rates_from_pos()` | Kraken `/0/public/OHLC` |
-| Execution | `mt5.order_send()` | `krakenex.query_private('AddOrder')` |
-| Spread check | MT5 live tick | Removed (handled by Kraken) |
-| Point size | Forex pip (0.00001) | Crypto unit (BTC=0.1, ETH=0.01) |
-| Thresholds | Forex pips | Dollar units (recalibrated) |
-| Pairs | GBPUSD, USDCAD, EURCHF | XBTUSD, ETHUSD |
+| `detect` | Run Flow, validate the signal shape | No signal or malformed → abort |
+| `analyse` | Finnhub headlines → DeepSeek verdict | API down → `UNCERTAIN`, never CONFIRM/OPPOSE |
+| `risk_check` | Positions+orders, daily loss, signal sanity | Any failure → abort |
+| `execute` | `trade_executor.place_order()` | Structured failure → `EXECUTION_FAILED` alert |
+| `hitl` | Push to `pending_signals` for confirmation | Firebase down → signal dropped, logged |
 
-### Recalibrated Thresholds (as of April 2026)
-```python
-MIN_DEVIATION_PIPS = 50.0    # $50 minimum deviation from MA
-MAX_DEVIATION_PIPS = 1000.0  # $1000 max deviation
-MAX_ATR_PIPS       = 600.0   # Skip if ATR > $600
-MIN_ATR_PIPS       = 10.0    # Skip if ATR < $10
-# Trend slope threshold: 100.0 units/candle
-# Validated from live data: current BTC slope ~70 during active market
-# Asian session slope expected to be lower (calmer conditions)
+Routing:
+
+```
+detect     → no signal              → END
+analyse    → OPPOSE                 → END
+analyse    → CONFIRM / UNCERTAIN    → risk_check
+risk_check → fail                   → END
+risk_check → MANUAL mode            → hitl
+risk_check → pass + UNCERTAIN       → hitl
+risk_check → pass + CONFIRM         → execute
 ```
 
-### What Stays Identical
-- `_calculate_ma()` — pure NumPy, no exchange dependency
-- `_calculate_atr()` — pure NumPy, no exchange dependency
-- `_is_trending()` — linear regression slope, no exchange dependency
-- `_is_asian_session()` — datetime only
-- `_is_safe_entry_time()` — datetime only
-- `_build_signal()` — pure math, signal dict shape unchanged
+The compiled graph is cached at module level — compiling per symbol per cycle is waste.
+
+A DeepSeek outage degrades to `UNCERTAIN` rather than `CONFIRM` or `OPPOSE`, so an API
+failure can neither green-light nor silently block trades on its own: it routes to a human.
 
 ---
 
-## Executor (`src/executor.py`)
+## Execution Layer (`src/trade_executor.py`)
 
-Wraps `krakenex` and translates signal dicts into Kraken REST API calls.
+One code path for both AUTO and MANUAL execution, so risk sizing and price handling
+cannot drift apart between them.
 
-**dry_run=True** — logs the order, does not send it. Use for testing.
-**dry_run=False** — live execution on Kraken.
+Guarantees:
 
-```python
-order_params = {
-    "pair":      "XBTUSD",
-    "type":      "buy",      # Kraken uses lowercase
-    "ordertype": "market",
-    "volume":    "0.001",
-}
-api.query_private("AddOrder", order_params)
+- **Signal validated first** — required fields present, prices numeric and positive,
+  SL/TP on the correct side of entry for the direction
+- **Risk-based sizing** — `RISK_PER_TRADE_PCT` of balance across the entry→SL distance,
+  clamped to the symbol's `volume_min` / `volume_max` / `volume_step` and to `LOT_SIZE`
+- **Digit rounding** — price, SL and TP rounded to `symbol_info.digits`; unrounded values
+  are silently dropped by the broker on symbols like XAUUSD
+- **Stops level respected** — orders inside `trade_stops_level` are rejected locally
+- **Never unprotected** — an order is never sent without both SL and TP
+- **Live price re-check** — SL/TP re-validated against the fill price, not the stale signal
+- **Filling mode fallback** — IOC → FOK → RETURN on `TRADE_RETCODE_INVALID_FILL`
+- **Transient retry** — requote, price-changed, price-off, timeout and connection retcodes
+  get one retry at a refreshed price
+- **Never raises** — callers receive `{ok, ticket, price, lot, retcode, error}`
+
+Every execution appends to `logs/trades/trades_YYYY-MM-DD.csv`.
+
+---
+
+## Broker Credential Resolution
+
+Broker credentials are editable from the mobile app (Settings → Broker Account), which
+writes `mt5_config`. `config.py` remains the backup source.
+
 ```
+BraveBot.__init__
+  └─ _init_firebase()            ← must come first; credentials live in Firebase
+  └─ _init_mt5()
+       └─ _resolve_mt5_credentials()   ← cached for the process lifetime
+            └─ _read_mt5_credentials()
+                 ├─ Firebase mt5_config    → used only if login + password + server
+                 │                            are ALL present and valid
+                 └─ config.py              → used if the node is missing, empty,
+                                              unreadable, or partially filled
+       └─ mt5.login(login, password, server)
+```
+
+Design constraints:
+
+- **Partial config never wins.** A half-filled node falls back to `config.py` instead of
+  attempting a doomed login, so a bad edit from the app cannot lock the bot out.
+- **Resolved once per process.** `_reconnect_mt5()` reuses the cached tuple. Re-reading on
+  reconnect could silently move a running bot to a different broker account while positions
+  are open, leaving them unmonitored.
+- **Changing accounts requires a restart.** Hot-reloading would mean `mt5.shutdown()` +
+  `mt5.initialize()` mid-session. The app states this limitation in the Broker Account card.
+- **The password is never logged.** Only the source, login and server appear in the log.
+
+Security note: `mt5_config` holds the password in plaintext. Realtime Database rules must
+restrict this subtree to the owning UID.
 
 ---
 
 ## Strategy Contract
 
-Every strategy must follow this interface. `agent.py` calls only `analyze()`.
+Every strategy must follow this interface. `graph.py` calls only `analyze()`.
 
 ```python
 class MyStrategy:
@@ -166,8 +202,8 @@ class MyStrategy:
 
     def analyze(self, symbol: str, provided_rates: dict | None = None) -> dict | None:
         """
-        Live mode:    provided_rates = None → fetch from Kraken
-        Backtest mode: provided_rates = {"M15": list[dict]}
+        Live mode:     provided_rates = None → fetch from MT5
+        Backtest mode: provided_rates = {mt5.TIMEFRAME_H1: [...], mt5.TIMEFRAME_M15: [...]}
         Returns signal dict or None.
         """
         pass
@@ -176,19 +212,21 @@ class MyStrategy:
 **Signal dict shape:**
 ```python
 {
-    "symbol":            str,    # e.g. "XBTUSD"
+    "symbol":            str,    # e.g. "EURUSD"
     "direction":         str,    # "BUY" | "SELL"
-    "strategy_name":     str,    # e.g. "frost_kraken"
+    "strategy_name":     str,    # e.g. "Flow"
     "order_type":        str,    # "MARKET"
     "entry_price":       float,
     "suggested_sl":      float,
     "suggested_tp":      float,
     "risk_reward_ratio": float,
-    "volume":            float,  # BTC volume e.g. 0.001
     "probability":       str,    # "HIGH" | "MEDIUM"
     "structure":         dict,   # strategy metadata
 }
 ```
+
+`trade_executor.validate_signal()` enforces the first seven fields at two points — in
+DETECT and again in RISK_CHECK — before anything reaches the broker.
 
 ---
 
@@ -203,116 +241,98 @@ All candles throughout the codebase use this shape:
     "high":   float,
     "low":    float,
     "close":  float,
-    "volume": float,  # trade volume
+    "volume": float,  # tick volume from MT5
 }
 ```
 
-Kraken OHLC API returns: `[time, open, high, low, close, vwap, volume, count]`
-We map index 0→time, 1→open, 2→high, 3→low, 4→close, 6→volume.
-
 ---
 
-## Kraken Pair Names
+## Flow Strategy (`src/flow.py`)
 
-Kraken uses non-standard pair names. Important ones:
+**Type:** Trend continuation scalper (structure + sweep + reclaim)
+**Timeframes:** H1 for trend and structure, M15 for entry
+**Sessions (UTC):** Pre-London 06:00–08:00, London 08:00–11:00, Bridge 11:00–13:00, NY 13:00–16:00
 
-| Common Name | Kraken Name |
-|---|---|
-| BTC/USD | XBTUSD |
-| ETH/USD | ETHUSD |
+Entry requires all of:
 
-Always use Kraken's naming in API calls. XBTUSD not BTCUSD.
+1. H1 fractal trend defined — HH+HL = UPTREND, LH+LL = DOWNTREND. No ranging.
+2. Area of Interest via zone clustering — minimum 2 touches within a 15-pip band
+3. M15 sweep + reclaim of that AOI — wick through, close back inside, body >40% of range
+4. Active session window
+5. No high-impact news within ±30 minutes (`news_filter.py`)
+
+Exit: ATR-based SL (1.2× ATR on M15), 1.5:1 minimum RR.
 
 ---
 
 ## Firebase Data Structure
 
-```
-quantifyx/
-  signals/
-    {push_id}/
-      symbol, direction, strategy_name
-      entry_price, suggested_sl, suggested_tp
-      risk_reward_ratio, volume, probability
-      timestamp
+Everything the bot and the mobile app exchange lives under `users/{USER_ID}/`:
 
-  trades/
-    {push_id}/
-      symbol, direction, volume
-      txid, status, timestamp
-
-  status/
-    is_running        bool
-    last_updated      string
-    active_strategy   string
 ```
+users/{USER_ID}/
+  bot_status/          balance, equity, profit, open_positions,
+                       session_pnl, is_running, active_strategy, execution_mode
+  brave_config/        execution_mode (AUTO|MANUAL), strategy_config/flow/{enabled, max_trades}
+  commands/            action: start|stop
+  health/              mt5_connected, firebase_connected, account_trade_allowed, status
+  market_status/       per-symbol OPEN|CLOSED|RESTRICTED|UNAVAILABLE
+  alerts/{push_id}/    TRADE_EXECUTED | EXECUTION_FAILED — ticket, filled_price, lot, error
+  pending_signals/     HITL queue — status PENDING|CONFIRMED|EXECUTING|EXECUTED|
+                       REJECTED|EXPIRED|FAILED, expires_at
+  news_analysis/{sym}/ verdict, reason, headlines[], article_count, news_source, model
+  mt5_config/          login, password, server, updated_at, updated_by
+```
+
+### HITL signal lifecycle
+
+```
+PENDING ──user confirms──→ CONFIRMED ──bot claims──→ EXECUTING ──→ EXECUTED
+   │                                                      └──────→ FAILED
+   ├──user rejects───────→ REJECTED
+   └──expires_at passed──→ EXPIRED
+```
+
+The bot claims a signal (`EXECUTING`) *before* sending the order. If that write fails it
+skips the signal — executing without being able to record the outcome would re-execute the
+same signal on the next cycle.
 
 ---
 
-## Environment Variables (`.env`)
+## Configuration (`config.py`)
+
+Every value can be overridden by an environment variable of the same name; the literals in
+`config.py` are fallbacks. `validate_config()` runs at startup, raising `ConfigError` on
+values that make trading unsafe and returning warnings for the rest.
 
 ```
-KRAKEN_API_KEY=         # QuantifyX-Agent trading key
-KRAKEN_API_SECRET=      # QuantifyX-Agent trading secret
-PRISM_API_KEY=          # PRISM market data key
+MT5_LOGIN, MT5_PASSWORD, MT5_SERVER          # broker (Firebase mt5_config takes priority)
+FIREBASE_DATABASE_URL, FIREBASE_CREDENTIALS, USER_ID
+SYMBOLS, TIMEFRAME, LOT_SIZE, MAX_TRADES
+RISK_PER_TRADE_PCT, DAILY_LOSS_LIMIT_PCT
+DEEPSEEK_API_KEY, FINNHUB_API_KEY
+EXECUTION_MODE, SIGNAL_EXPIRY_SECONDS
 ```
 
-Never commit `.env`. It is in `.gitignore`.
-
----
-
-## Kraken API Keys
-
-Two keys are required:
-
-**QuantifyX-Agent** (used by the bot)
-- Query Funds ✅
-- Query Open Orders & Trades ✅
-- Query Closed Orders & Trades ✅
-- Create & Modify Orders ✅
-- Cancel & Close Orders ✅
-- Withdraw ❌ never
-
-**QuantifyX-Leaderboard** (submitted to lablab.ai)
-- Query Funds ✅
-- Query Open Orders & Trades ✅
-- Everything else ❌
+Never commit `config.py` or `serviceAccountKey.json`. Both are in `.gitignore`.
 
 ---
 
 ## Known Constraints and Issues
 
-- Kraken CLI binary is Linux/Mac only — no Windows binary in v0.3.0.
-  QuantifyX uses `krakenex` (Python REST wrapper) instead.
-  This covers 100% of required functionality.
+- **LangChain Pydantic v1 on Python 3.14.** Importing `langgraph` emits
+  `UserWarning: Core Pydantic V1 functionality isn't compatible with Python 3.14 or greater`.
+  Non-blocking today; if LangChain drops v1 support, `graph.py` breaks at import.
 
-- Git Bash on Windows cannot execute Linux ELF binaries even with the
-  `.tar.gz` extracted. Do not attempt to run the Kraken CLI binary on Windows
-  without WSL or a Linux machine.
+- **Broker credentials require a restart.** By design — see Broker Credential Resolution.
 
-- WSL on company laptops is risky — IT policy may prohibit it.
-  Stick with `krakenex` on Windows.
+- **`mt5_config` stores the password in plaintext.** Realtime Database rules must be
+  scoped to the owning UID.
 
-- The `.venv` path must be explicit when running scripts in PowerShell
-  because the activated venv sometimes resolves to an older Brave venv.
-  Always use the full path:
-  `& "...\QuantifyX\.venv\Scripts\python.exe" script.py`
+- **Finnhub general-news is not symbol-specific.** The feed is fetched once and cached for
+  5 minutes, then keyword-filtered per symbol. Without the cache a 60-second loop over
+  three symbols exceeds the free-tier rate limit.
 
-- Frost session filter blocks signals outside 00:00–06:00 UTC.
-  For testing during the day, pass candles directly:
-  `f.analyze('XBTUSD', provided_rates={'M15': candles})`
+- **MT5 terminal must be running** with Algo Trading enabled, on the same account.
 
-- BTC ATR during active trading hours is $400–600.
-  MAX_ATR_PIPS set to 600.0 to accommodate this.
-  During Asian session it drops to $200–350 — natural filter.
-
-- BTC trend slope during active hours: ~70 units/candle observed.
-  Threshold set to 100.0. Asian session slope expected lower.
-  Recalibrate if too many false trending rejections occur overnight.
-
-- Kraken balance returns empty dict `{}` if account has no funds.
-  This is normal — not an API error.
-
-- python-dotenv must be installed into the correct venv.
-  If `ModuleNotFoundError: No module named 'dotenv'` appears,
-  run: `& "...\QuantifyX\.venv\Scripts\python.exe" -m pip install python-dotenv`
+- **Windows only.** The MetaTrader5 Python package has no Linux or macOS build.
