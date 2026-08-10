@@ -53,6 +53,7 @@ from config import (  # noqa: E402
 from graph import run_brave_graph  # noqa: E402
 from news_filter import NewsFilter  # noqa: E402
 from trade_executor import place_order  # noqa: E402
+from trade_logger import attach_ticket, mark_hitl_outcome  # noqa: E402
 
 BOT_VERSION = "Brave v3.0"
 
@@ -466,7 +467,8 @@ class BraveBot:
         log.info("Running health check...")
 
         health: dict = {
-            "timestamp":             datetime.now().isoformat(),
+            # UTC ISO timestamp — app uses this to refuse stale mt5_connected
+            "timestamp":             datetime.now(timezone.utc).isoformat(),
             "mt5_connected":         False,
             "firebase_connected":    False,
             "account_trade_allowed": False,
@@ -669,6 +671,8 @@ class BraveBot:
                     log.info(f"[{signal.get('symbol', '?')}] Signal expired — no response in "
                              f"{SIGNAL_EXPIRY_SECONDS}s")
                     self._set_signal_status(key, "EXPIRED")
+                    if signal.get("symbol"):
+                        mark_hitl_outcome(signal["symbol"], "EXPIRED")
                 continue
 
             if status != "CONFIRMED":
@@ -703,6 +707,8 @@ class BraveBot:
             if result["ok"]:
                 self._set_signal_status(key, "EXECUTED", ticket=result["ticket"],
                                         filled_price=result["price"], lot=result["lot"])
+                # Graph already wrote a HITL row with blank ticket — attach the fill
+                attach_ticket(symbol, result["ticket"], outcome="EXECUTED")
                 self._push_alert({
                     **signal,
                     "alert_type":   "TRADE_EXECUTED",
@@ -713,6 +719,7 @@ class BraveBot:
                 })
             else:
                 self._set_signal_status(key, "FAILED", error=result["error"])
+                mark_hitl_outcome(symbol, "EXECUTION_FAILED")
                 self._push_alert({
                     **signal,
                     "alert_type": "EXECUTION_FAILED",

@@ -899,8 +899,14 @@ const BrokerAccountCard = memo(function BrokerAccountCard() {
 // ════════════════════════════════════════════════════════════════════
 // SETTINGS SCREEN — Flow is the only strategy
 // ════════════════════════════════════════════════════════════════════
+// Bot health is written every HEALTH_CHECK_INTERVAL (600s). Trust the
+// stored mt5_connected flag only while the bot is running and the health
+// write is fresher than ~2× that interval (~20 min).
+const HEALTH_FRESH_MS = 20 * 60 * 1000;
+
 const SettingsScreen = memo(function SettingsScreen() {
   const [braveConfig, configErr] = useFirebaseValue(`users/${USER_ID}/brave_config`);
+  const [botStatus] = useFirebaseValue(`users/${USER_ID}/bot_status`);
   const [health, healthErr] = useFirebaseValue(`users/${USER_ID}/health`);
   const [expanded, setExpanded] = useState(false);
   const [actionError, setActionError] = useState(null);
@@ -923,6 +929,23 @@ const SettingsScreen = memo(function SettingsScreen() {
   }, []);
 
   const healthStatus = health?.status ?? DASH;
+  const botRunning = botStatus?.is_running === true;
+
+  const healthFresh = useMemo(() => {
+    if (!health?.timestamp) return false;
+    const t = Date.parse(health.timestamp);
+    if (Number.isNaN(t)) return false;
+    return (Date.now() - t) <= HEALTH_FRESH_MS;
+  }, [health?.timestamp]);
+
+  // Stale or offline bot → do not trust the last Firebase boolean
+  const mt5Trusted = botRunning && healthFresh;
+  const mt5Label = !mt5Trusted
+    ? 'Unknown'
+    : (health?.mt5_connected === true ? 'Yes' : 'No');
+  const mt5Tone = !mt5Trusted
+    ? 'neutral'
+    : (health?.mt5_connected === true ? 'success' : 'danger');
 
   return (
     <View style={s.safe}>
@@ -986,7 +1009,7 @@ const SettingsScreen = memo(function SettingsScreen() {
           </View>
           <View style={s.setRow}>
             <Text style={s.setKeyB}>MT5 Connected</Text>
-            <Text style={s.setValMuted}>{health?.mt5_connected === true ? 'Yes' : 'No'}</Text>
+            <StatusPill label={mt5Label} tone={mt5Tone} />
           </View>
           <View style={s.setRow}>
             <Text style={s.setKeyB}>Account Trading</Text>

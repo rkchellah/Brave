@@ -36,6 +36,7 @@ from config import DAILY_LOSS_LIMIT_PCT, MAX_TRADES, SIGNAL_EXPIRY_SECONDS
 from flow import Flow
 from news_fetcher import fetch_news_for_symbol, format_headlines_for_llm
 from trade_executor import ExecutionError, place_order, validate_signal
+from trade_logger import log_signal
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +62,8 @@ class BraveState(TypedDict):
     abort_reason:     str
     hitl_required:    bool
     executed:         bool
+    mt5_ticket:       int
+    fill_price:       float
     firebase:         dict
 
 
@@ -306,7 +309,12 @@ def node_execute(state: BraveState) -> BraveState:
         except Exception as e:
             log.error(f"[EXECUTE] {symbol}: Alert push failed: {e}")
 
-    return {**state, "executed": result["ok"]}
+    return {
+        **state,
+        "executed":   result["ok"],
+        "mt5_ticket": int(result["ticket"] or 0) if result["ok"] else 0,
+        "fill_price": float(result["price"] or 0.0) if result["ok"] else 0.0,
+    }
 
 
 # ── Node 4b: HITL ─────────────────────────────────────────────────────
@@ -412,12 +420,75 @@ def run_brave_graph(symbol: str, config: dict, firebase: dict,
         "abort_reason":     "",
         "hitl_required":    False,
         "executed":         False,
+        "mt5_ticket":       0,
+        "fill_price":       0.0,
         "firebase":         firebase or {},
     }
 
     try:
-        return build_brave_graph().invoke(initial)
+        result = build_brave_graph().invoke(initial)
     except Exception as e:
         log.error(f"[GRAPH] {symbol}: Pipeline failed — {e}")
         traceback.print_exc()
-        return {**initial, "abort": True, "abort_reason": f"Pipeline error: {e}"}
+        result = {**initial, "abort": True, "abort_reason": f"Pipeline error: {e}"}
+
+    # One CSV row per signal that reached ANALYSE (DETECT produced a setup).
+    # Written once from final state — exit fields stay blank until close.
+    if result.get("signal"):
+        _log_signal_row(result)
+
+    return result
+
+
+def _log_signal_row(state: BraveState) -> None:
+    """Map final BraveState → trade_log.csv columns."""
+    signal = state.get("signal") or {}
+    entry  = state.get("fill_price") or signal.get("entry_price", "")
+
+    log_signal({
+        "timestamp":         datetime.now(timezone.utc).isoformat(),
+        "symbol":            state.get("symbol", signal.get("symbol", "")),
+        "direction":         signal.get("direction", ""),
+        "entry":             entry,
+        "sl":                signal.get("suggested_sl", ""),
+        "tp":                signal.get("suggested_tp", ""),
+        "rr":                signal.get("risk_reward_ratio", ""),
+        "deepseek_verdict":  state.get("sentiment") or "",
+        "deepseek_reason":   state.get("sentiment_reason") or "",
+        "risk_check_result": _risk_result_label(state),
+        "outcome":           _outcome_label(state),
+        "mt5_ticket":        state.get("mt5_ticket") or "",
+        "exit_price":        "",
+        "exit_reason":       "",
+        "pnl":               "",
+    })
+
+
+def _risk_result_label(state: BraveState) -> str:
+    if state.get("sentiment") == "OPPOSE":
+        return "SKIPPED"           # Never reached RISK_CHECK
+    if state.get("risk_ok"):
+        return "PASS"
+    reason = state.get("risk_reason") or ""
+    return f"FAIL: {reason}" if reason else "FAIL"
+
+
+def _outcome_label(state: BraveState) -> str:
+    if state.get("sentiment") == "OPPOSE":
+        return "OPPOSE"
+    if not state.get("risk_ok"):
+        # ANALYSE ran but risk never passed (or never reached — shouldn't happen
+        # unless the graph aborted mid-flight after ANALYSE)
+        if state.get("risk_reason"):
+            return "RISK_FAIL"
+        return "ABORT"
+    if state.get("executed"):
+        return "EXECUTED"
+    if state.get("hitl_required"):
+        return "HITL"
+    if state.get("mt5_ticket"):
+        return "EXECUTED"
+    # EXECUTE node ran and failed, or HITL push failed
+    if str(state.get("execution_mode", "")).upper() == "MANUAL" or state.get("sentiment") == "UNCERTAIN":
+        return "HITL_FAILED"
+    return "EXECUTION_FAILED"

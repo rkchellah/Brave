@@ -5,6 +5,7 @@ config.py
 
 # Log files and data caches
 logs/
+logs/trade_log.csv
 data/
 *.log
 sentiment_log

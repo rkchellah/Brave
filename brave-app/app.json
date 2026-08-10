@@ -5,12 +5,22 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0B0E14"
+    },
     "android": {
       "newArchEnabled": false,
       "package": "com.rkchellah.braveapp",
       "adaptiveIcon": {
-        "backgroundColor": "#10141D"
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0B0E14"
       }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
     },
     "extra": {
       "eas": {

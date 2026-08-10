@@ -36,6 +36,29 @@ SYMBOL_CURRENCIES: dict[str, list[str]] = {
 }
 
 
+def _parse_event_time(dt_str: str) -> datetime:
+    """
+    Parse ForexFactory date stamps to UTC-aware datetime.
+
+    Current feed: ISO 8601 with colon offset — 2026-08-09T19:50:00-04:00
+    Legacy fallback: 01-06-2025T08:30:00-0500
+    """
+    text = (dt_str or "").strip()
+    if not text:
+        raise ValueError("empty date")
+
+    try:
+        # Handles YYYY-MM-DDTHH:MM:SS±HH:MM (and Z)
+        event_dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        # Legacy MM-DD-YYYY… with %z offset (no colon)
+        event_dt = datetime.strptime(text, "%m-%d-%YT%H:%M:%S%z")
+
+    if event_dt.tzinfo is None:
+        event_dt = event_dt.replace(tzinfo=timezone.utc)
+    return event_dt.astimezone(timezone.utc)
+
+
 class NewsFilter:
     """
     Wraps ForexFactory calendar fetching and event-window checking.
@@ -49,7 +72,8 @@ class NewsFilter:
     def __init__(self):
         self._events: list[dict]    = []
         self._last_fetch: datetime | None = None
-        self._fetch_failed: bool    = False   # if endpoint is down, we trade anyway
+        # True when the last fetch/parse failed — fail closed until a good load
+        self._fetch_failed: bool    = False
 
     # ═══════════════════════════════════════════════════════════════
     # PUBLIC
@@ -60,15 +84,23 @@ class NewsFilter:
         Returns False if a high-impact event affecting this symbol
         falls within PAUSE_BEFORE_MIN or PAUSE_AFTER_MIN of now.
 
-        If the calendar endpoint is unreachable, returns True so the
-        bot doesn't freeze — we log a warning instead.
+        If the calendar fetch/parse failed, returns False (fail closed)
+        so a broken filter cannot silently allow trading through news.
+        A genuinely empty successful load is treated as a quiet week.
         """
         self._refresh_if_stale()
 
         if not self._events:
-            # No data — don't block trading, just warn
             if self._fetch_failed:
-                log.warning("NewsFilter: calendar unavailable — proceeding without news filter")
+                log.warning(
+                    "NewsFilter: calendar fetch/parse failed — "
+                    "trading paused as a precaution"
+                )
+                return False
+            log.info(
+                "NewsFilter: no high-impact events this week "
+                "(calendar loaded successfully, empty or no usable rows)"
+            )
             return True
 
         currencies = SYMBOL_CURRENCIES.get(symbol, [])
@@ -91,7 +123,6 @@ class NewsFilter:
             if event_time is None:
                 continue
 
-            # Check if now is within the pause window around this event
             window_start = event_time - pause_before
             window_end   = event_time + pause_after
 
@@ -159,27 +190,36 @@ class NewsFilter:
                 raise ValueError(f"expected a list of events, got {type(raw).__name__}")
 
             parsed = []
+            date_failures = 0
 
             for item in raw:
                 if not isinstance(item, dict):
                     continue
-                # Parse the datetime string ForexFactory provides
-                # Format: "01-06-2025T08:30:00-0500"
+
+                # Feed uses "country" (e.g. USD); keep "currency" for callers
+                country = (item.get("country") or item.get("currency") or "").strip().upper()
+                if not country:
+                    continue
+                item["currency"] = country
+
                 dt_str = item.get("date", "")
                 if not dt_str:
+                    date_failures += 1
                     continue
 
                 try:
-                    # ForexFactory stamps carry their own offset (e.g. -0500),
-                    # which %z parses directly — then normalise to UTC.
-                    from datetime import datetime as dt
-
-                    event_dt = dt.strptime(dt_str, "%m-%d-%YT%H:%M:%S%z")
-                    event_dt_utc = event_dt.astimezone(timezone.utc)
-                    item["_parsed_time"] = event_dt_utc
+                    item["_parsed_time"] = _parse_event_time(dt_str)
                     parsed.append(item)
                 except ValueError:
-                    continue  # Skip malformed date entries
+                    date_failures += 1
+                    continue
+
+            # Payload had rows but none survived parsing → treat as failure
+            if raw and not parsed:
+                raise ValueError(
+                    f"parsed 0 of {len(raw)} events "
+                    f"({date_failures} date/currency failures) — schema mismatch?"
+                )
 
             self._events       = parsed
             self._last_fetch   = datetime.now(timezone.utc)
@@ -189,17 +229,18 @@ class NewsFilter:
             log.info(
                 f"NewsFilter: Loaded {len(parsed)} events "
                 f"({len(high_impact)} high-impact) for this week"
+                + (f" — skipped {date_failures} bad rows" if date_failures else "")
             )
 
         except requests.exceptions.RequestException as e:
             log.warning(f"NewsFilter: Failed to fetch calendar — {e}")
             self._fetch_failed = True
-            self._last_fetch   = datetime.now(timezone.utc)  # Don't retry immediately
+            self._last_fetch   = datetime.now(timezone.utc)
+            # Keep existing events if we had a previous good load
 
         except (ValueError, TypeError) as e:
-            # Malformed JSON or an unexpected payload shape — same handling as
-            # a network failure: keep the old events, don't hammer the endpoint.
             log.warning(f"NewsFilter: Calendar payload unusable — {e}")
             self._fetch_failed = True
             self._last_fetch   = datetime.now(timezone.utc)
-            # Keep existing events if we had them
+            # Keep existing events if we had them; otherwise _events stays empty
+            # and is_safe_to_trade will fail closed
