@@ -35,19 +35,19 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Copy `config.example.py` to `config.py` and fill in:
+Copy `.env.example` to `.env` and fill in the secrets:
 
-```python
-MT5_LOGIN         = your_account_number
-MT5_PASSWORD      = "your_password"
-MT5_SERVER        = "RoboForex-Demo"
-FIREBASE_USER_ID  = "your_uid"
-FINNHUB_API_KEY   = "your_key"
-DEEPSEEK_API_KEY  = "your_key"
-EXECUTION_MODE    = "AUTO"   # "AUTO" | "MANUAL"
+```
+DEEPSEEK_API_KEY=your_key
+FINNHUB_API_KEY=your_key
+USER_ID=your_uid
+MT5_LOGIN=your_account_number   # prompt default only
+MT5_SERVER=RoboForex-Demo       # prompt default only
 ```
 
-Download your Firebase service account key and save as `serviceAccountKey.json` at the project root. Both `config.py` and `serviceAccountKey.json` are in `.gitignore` — never commit them.
+No password goes in any file — the bot prompts for it (hidden) at every start and never writes it to disk. Non-secret settings such as `EXECUTION_MODE` live in `config.py` and can be overridden from `.env`.
+
+Download your Firebase service account key and save as `serviceAccountKey.json` at the project root. `.env`, `config.py` and `serviceAccountKey.json` are all in `.gitignore` — never commit them.
 
 ```bash
 python src/seed_mt5_config.py   # optional — seeds broker credentials into Firebase

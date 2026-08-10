@@ -31,22 +31,22 @@ const Tab = createBottomTabNavigator();
 // ── Design tokens ─────────────────────────────────────────────────
 const theme = {
   bg:            '#0B0E14',
-  surface:       '#141824',
-  surfaceRaised: '#1B2130',
+  surface:       '#12161F',
+  surfaceRaised: '#1A2030',
   textPrimary:   '#F5F6F8',
   textSecondary: '#8B93A7',
-  textMuted:     '#565E70',
+  textMuted:     '#5C6578',
   success:       '#2ECC8F',
   danger:        '#EF5D6F',
   accent:        '#5B8DEF',
-  radius: { sm: 8, md: 14, lg: 20 },
+  radius: { sm: 10, md: 16, lg: 22 },
   spacing: { xs: 4, sm: 8, md: 16, lg: 24, xl: 32 },
 };
 
 const TINT = {
-  success: 'rgba(46,204,143,0.16)',
-  danger:  'rgba(239,93,111,0.16)',
-  accent:  'rgba(91,141,239,0.16)',
+  success: 'rgba(46,204,143,0.14)',
+  danger:  'rgba(239,93,111,0.14)',
+  accent:  'rgba(91,141,239,0.18)',
 };
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -278,7 +278,7 @@ const SignalCard = memo(function SignalCard({ sigKey, sig, isExpanded, isBusy, o
       <TouchableOpacity
         style={s.sigCardTop}
         onPress={() => onToggle?.(sigKey)}
-        activeOpacity={0.7}
+        activeOpacity={0.82}
         disabled={!isPending}
       >
         <View style={s.sigLeft}>
@@ -1090,22 +1090,23 @@ export default function App() {
                 tabBarStyle: {
                   position: 'absolute',
                   backgroundColor: theme.surface,
-                  bottom: 24,
-                  left: 20,
-                  right: 20,
-                  height: 72,
+                  bottom: 22,
+                  left: 18,
+                  right: 18,
+                  height: 74,
                   borderRadius: theme.radius.lg,
                   borderTopWidth: 0,
                   paddingBottom: 0,
+                  paddingTop: 4,
                 },
-                tabBarActiveTintColor: theme.textPrimary,
+                tabBarActiveTintColor: theme.accent,
                 tabBarInactiveTintColor: theme.textMuted,
                 tabBarIcon: ({ focused }) => (
                   <View style={[s.tabPill, focused && s.tabPillActive]}>
                     <MaterialCommunityIcons
                       name={TAB_ICONS[route.name] || 'help'}
-                      size={22}
-                      color={focused ? theme.textPrimary : theme.textMuted}
+                      size={21}
+                      color={focused ? theme.accent : theme.textMuted}
                     />
                     <Text style={[s.tabLbl, { color: focused ? theme.textPrimary : theme.textMuted }]}>
                       {route.name}
@@ -1133,40 +1134,56 @@ export default function App() {
 const s = StyleSheet.create({
   safe: { flex: 1, backgroundColor: theme.bg },
   screen: { flex: 1, backgroundColor: theme.bg },
-  scrollDash: { paddingHorizontal: theme.spacing.md, paddingTop: theme.spacing.lg, paddingBottom: 120 },
-  scrollList: { paddingHorizontal: theme.spacing.md, paddingTop: 20, paddingBottom: 120 },
+  scrollDash: { paddingHorizontal: theme.spacing.md, paddingTop: theme.spacing.lg, paddingBottom: 124 },
+  scrollList: { paddingHorizontal: theme.spacing.md, paddingTop: 20, paddingBottom: 124 },
 
   splitRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: theme.spacing.lg },
   secLbl: {
-    fontSize: 12, fontWeight: '500', color: theme.textMuted,
-    textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: theme.spacing.sm,
+    fontSize: 11, fontWeight: '600', color: theme.textMuted,
+    textTransform: 'uppercase', letterSpacing: 1.1, marginBottom: 10,
   },
-  dashBigVal: { fontSize: 36, fontWeight: '700', color: theme.textPrimary, marginBottom: 12 },
-  dashHugeVal: { fontSize: 44, fontWeight: '700', marginBottom: theme.spacing.xs },
+  dashBigVal: {
+    fontSize: 34, fontWeight: '700', color: theme.textPrimary, marginBottom: 12,
+    letterSpacing: -0.6, fontVariant: ['tabular-nums'],
+  },
+  dashHugeVal: {
+    fontSize: 42, fontWeight: '700', marginBottom: theme.spacing.xs,
+    letterSpacing: -0.8, fontVariant: ['tabular-nums'],
+  },
   badgeWrap: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
-  todayTxt: { fontSize: 13, color: theme.textSecondary },
+  todayTxt: { fontSize: 13, color: theme.textSecondary, fontWeight: '500' },
 
   pill: {
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+    borderRadius: 8,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
     alignSelf: 'flex-start',
   },
-  pillTxt: { fontSize: 11, fontWeight: '700' },
+  pillTxt: { fontSize: 11, fontWeight: '700', letterSpacing: 0.3 },
 
   outlineCard: {
     backgroundColor: theme.surface,
     borderRadius: theme.radius.md,
-    padding: theme.spacing.md,
+    paddingHorizontal: 18,
+    paddingVertical: 6,
     marginBottom: theme.spacing.md,
   },
-  outlineRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 10 },
-  outlineLbl: { color: theme.textSecondary, fontSize: 14, fontWeight: '400' },
-  outlineVal: { color: theme.textPrimary, fontSize: 14, fontWeight: '600', flexShrink: 1, textAlign: 'right' },
+  outlineRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingVertical: 12,
+  },
+  outlineLbl: { color: theme.textSecondary, fontSize: 14, fontWeight: '500' },
+  outlineVal: {
+    color: theme.textPrimary, fontSize: 14, fontWeight: '600',
+    flexShrink: 1, textAlign: 'right', letterSpacing: -0.1,
+  },
 
   btnRow: { flexDirection: 'row', marginBottom: theme.spacing.md },
-  halfBtn: { flex: 1, height: 50, borderRadius: theme.radius.sm, justifyContent: 'center', alignItems: 'center' },
-  halfBtnTxt: { fontSize: 15, fontWeight: '700', letterSpacing: 0.5 },
+  halfBtn: {
+    flex: 1, height: 52, borderRadius: theme.radius.sm,
+    justifyContent: 'center', alignItems: 'center',
+  },
+  halfBtnTxt: { fontSize: 14, fontWeight: '700', letterSpacing: 0.8 },
 
   actionStop: {
     backgroundColor: theme.danger, borderRadius: theme.radius.md, height: 56,
@@ -1176,16 +1193,16 @@ const s = StyleSheet.create({
     backgroundColor: theme.success, borderRadius: theme.radius.md, height: 56,
     justifyContent: 'center', alignItems: 'center',
   },
-  actionTxt: { color: theme.textPrimary, fontSize: 16, fontWeight: '700', letterSpacing: 0.5 },
+  actionTxt: { color: theme.textPrimary, fontSize: 15, fontWeight: '700', letterSpacing: 0.8 },
 
   sigCard: {
     flexDirection: 'row', backgroundColor: theme.surface,
-    borderRadius: theme.radius.md, padding: theme.spacing.md,
+    borderRadius: theme.radius.md, padding: 18,
     marginBottom: theme.spacing.md, alignItems: 'center',
   },
   sigCardCol: {
     backgroundColor: theme.surface,
-    borderRadius: theme.radius.md, padding: theme.spacing.md,
+    borderRadius: theme.radius.md, padding: 18,
     marginBottom: theme.spacing.md,
   },
   sigCardTop: { flexDirection: 'row', alignItems: 'center' },
@@ -1193,107 +1210,118 @@ const s = StyleSheet.create({
   sigExpanded: { marginTop: theme.spacing.md, paddingTop: theme.spacing.md },
   sigBtnRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
   sigAcceptBtn: {
-    flex: 1, backgroundColor: theme.success, paddingVertical: 12,
+    flex: 1, backgroundColor: theme.success, paddingVertical: 13,
     borderRadius: theme.radius.sm, alignItems: 'center',
   },
   sigRejectBtn: {
-    flex: 1, backgroundColor: theme.surfaceRaised, paddingVertical: 12,
+    flex: 1, backgroundColor: theme.surfaceRaised, paddingVertical: 13,
     borderRadius: theme.radius.sm, alignItems: 'center',
   },
-  sigBtnTxt: { color: theme.textPrimary, fontWeight: '700', fontSize: 14 },
+  sigBtnTxt: { color: theme.textPrimary, fontWeight: '700', fontSize: 13, letterSpacing: 0.6 },
 
   sigLeft: { marginRight: 14 },
-  sigTitle: { color: theme.textPrimary, fontSize: 17, fontWeight: '600', marginBottom: 2 },
-  sigSub: { color: theme.textSecondary, fontSize: 14, fontWeight: '400' },
-  sigSlTp: { color: theme.textSecondary, fontSize: 12, marginTop: theme.spacing.xs },
+  sigTitle: {
+    color: theme.textPrimary, fontSize: 17, fontWeight: '600', marginBottom: 2,
+    letterSpacing: -0.2,
+  },
+  sigSub: { color: theme.textSecondary, fontSize: 13, fontWeight: '400', lineHeight: 18 },
+  sigSlTp: { color: theme.textMuted, fontSize: 12, marginTop: theme.spacing.xs, fontWeight: '500' },
 
   setCard: {
     backgroundColor: theme.surface,
     borderRadius: theme.radius.md,
-    padding: theme.spacing.md,
+    paddingHorizontal: 18,
+    paddingVertical: 8,
     marginBottom: theme.spacing.md,
   },
   setRow: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingVertical: 10,
+    paddingVertical: 12,
   },
   raisedRow: {
     backgroundColor: theme.surfaceRaised,
     borderRadius: theme.radius.sm,
-    paddingHorizontal: theme.spacing.sm,
+    paddingHorizontal: 12,
   },
-  setLabel: { color: theme.textPrimary, fontSize: 17, fontWeight: '600' },
-  setKey: { color: theme.textSecondary, fontSize: 14, fontWeight: '400' },
+  setLabel: { color: theme.textPrimary, fontSize: 17, fontWeight: '600', letterSpacing: -0.2 },
+  setKey: { color: theme.textSecondary, fontSize: 14, fontWeight: '500' },
   setValStr: { color: theme.textPrimary, fontSize: 14, fontWeight: '600' },
-  setKeyB: { color: theme.textSecondary, fontSize: 14, fontWeight: '400' },
-  setValMuted: { color: theme.textSecondary, fontSize: 14, fontWeight: '400' },
+  setKeyB: { color: theme.textSecondary, fontSize: 14, fontWeight: '500' },
+  setValMuted: { color: theme.textSecondary, fontSize: 14, fontWeight: '500' },
 
-  fieldWrap: { paddingTop: theme.spacing.xs },
+  fieldWrap: { paddingTop: theme.spacing.xs, paddingBottom: theme.spacing.sm },
   fieldLabel: {
-    fontSize: 12, fontWeight: '500', color: theme.textMuted,
-    textTransform: 'uppercase', letterSpacing: 0.5,
+    fontSize: 11, fontWeight: '600', color: theme.textMuted,
+    textTransform: 'uppercase', letterSpacing: 1.0,
     marginBottom: theme.spacing.xs, marginTop: 14,
   },
-  fieldHint: { color: theme.textSecondary, fontSize: 12, marginTop: 6 },
-  fieldNote: { color: theme.textSecondary, fontSize: 12, lineHeight: 18, marginTop: theme.spacing.md },
+  fieldHint: { color: theme.textSecondary, fontSize: 12, marginTop: 6, lineHeight: 17 },
+  fieldNote: { color: theme.textMuted, fontSize: 12, lineHeight: 18, marginTop: theme.spacing.md },
   input: {
     backgroundColor: theme.surfaceRaised, borderRadius: theme.radius.sm,
-    paddingHorizontal: 14, paddingVertical: 12, color: theme.textPrimary, fontSize: 15,
-    minHeight: 46, justifyContent: 'center',
+    paddingHorizontal: 14, paddingVertical: 13, color: theme.textPrimary, fontSize: 15,
+    minHeight: 48, justifyContent: 'center', fontWeight: '500',
   },
   inputDisabled: { backgroundColor: theme.bg },
-  inputMasked: { color: theme.textSecondary, fontSize: 15, letterSpacing: 2 },
+  inputMasked: { color: theme.textSecondary, fontSize: 15, letterSpacing: 2.5, fontWeight: '500' },
   inputRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   inlineBtn: {
     paddingHorizontal: 14, paddingVertical: 12, borderRadius: theme.radius.sm,
-    backgroundColor: theme.surfaceRaised, minHeight: 46, justifyContent: 'center',
+    backgroundColor: theme.surfaceRaised, minHeight: 48, justifyContent: 'center',
   },
-  inlineBtnTxt: { color: theme.textPrimary, fontSize: 12, fontWeight: '700', letterSpacing: 0.5 },
+  inlineBtnTxt: { color: theme.accent, fontSize: 12, fontWeight: '700', letterSpacing: 0.6 },
   saveBtn: {
-    marginTop: 22, height: 50, borderRadius: theme.radius.sm, backgroundColor: theme.accent,
+    marginTop: 22, height: 52, borderRadius: theme.radius.sm, backgroundColor: theme.accent,
     justifyContent: 'center', alignItems: 'center',
   },
-  saveBtnTxt: { color: theme.textPrimary, fontSize: 15, fontWeight: '700', letterSpacing: 0.5 },
+  saveBtnTxt: { color: theme.textPrimary, fontSize: 14, fontWeight: '700', letterSpacing: 0.8 },
   successBand: {
-    backgroundColor: TINT.success, padding: 10,
+    backgroundColor: TINT.success, paddingHorizontal: 12, paddingVertical: 11,
     marginBottom: 12, borderRadius: theme.radius.sm,
   },
-  successTxt: { fontSize: 12, color: theme.success },
+  successTxt: { fontSize: 12, color: theme.success, fontWeight: '500', lineHeight: 17 },
 
   toggleOff: {
-    width: 44, height: 26, borderRadius: 13, backgroundColor: theme.surfaceRaised,
+    width: 46, height: 28, borderRadius: 14, backgroundColor: theme.surfaceRaised,
     justifyContent: 'center', paddingHorizontal: 3,
   },
-  toggleThumbOff: { width: 20, height: 20, borderRadius: 10, backgroundColor: theme.textPrimary },
+  toggleThumbOff: { width: 22, height: 22, borderRadius: 11, backgroundColor: theme.textPrimary },
 
   insightGroup: {
     backgroundColor: theme.surface, borderRadius: theme.radius.md,
-    padding: theme.spacing.md, marginBottom: theme.spacing.md,
+    padding: 18, marginBottom: theme.spacing.md,
   },
   gptBox: {
     marginTop: theme.spacing.md, borderRadius: theme.radius.sm,
-    padding: theme.spacing.md, backgroundColor: theme.surfaceRaised,
+    padding: 16, backgroundColor: theme.surfaceRaised,
   },
-  gptTitle: { color: theme.textPrimary, fontSize: 14, fontWeight: '600', marginBottom: 12 },
+  gptTitle: {
+    color: theme.textPrimary, fontSize: 13, fontWeight: '600',
+    marginBottom: 12, letterSpacing: 0.2,
+  },
   gptText: { color: theme.textSecondary, fontSize: 14, lineHeight: 22, marginBottom: theme.spacing.sm },
-  gptFoot: { color: theme.textMuted, fontSize: 12, marginTop: 6 },
+  gptFoot: { color: theme.textMuted, fontSize: 11, marginTop: 8, letterSpacing: 0.2 },
 
   warnBand: {
-    padding: 10, marginBottom: theme.spacing.md, borderRadius: theme.radius.sm,
+    paddingHorizontal: 12, paddingVertical: 11,
+    marginBottom: theme.spacing.md, borderRadius: theme.radius.sm,
   },
-  warnBandTxt: { fontSize: 12 },
+  warnBandTxt: { fontSize: 12, fontWeight: '500', lineHeight: 17 },
   emptyWrap: {
     flex: 1, justifyContent: 'center', alignItems: 'center',
-    paddingHorizontal: 40, gap: theme.spacing.sm,
+    paddingHorizontal: 44, gap: 10,
   },
-  emptyTitle: { color: theme.textPrimary, fontSize: 17, fontWeight: '600', textAlign: 'center' },
-  emptyDetail: { color: theme.textMuted, fontSize: 14, lineHeight: 20, textAlign: 'center' },
+  emptyTitle: {
+    color: theme.textPrimary, fontSize: 17, fontWeight: '600',
+    textAlign: 'center', letterSpacing: -0.2,
+  },
+  emptyDetail: { color: theme.textMuted, fontSize: 14, lineHeight: 21, textAlign: 'center' },
 
   tabPill: {
     alignItems: 'center', justifyContent: 'center',
-    borderRadius: theme.radius.sm,
-    paddingHorizontal: 10, paddingVertical: 6, minWidth: 58,
+    borderRadius: 12,
+    paddingHorizontal: 10, paddingVertical: 7, minWidth: 60,
   },
-  tabPillActive: { backgroundColor: theme.surfaceRaised },
-  tabLbl: { fontSize: 10, fontWeight: '600', marginTop: 2 },
+  tabPillActive: { backgroundColor: TINT.accent },
+  tabLbl: { fontSize: 10, fontWeight: '600', marginTop: 3, letterSpacing: 0.15 },
 });

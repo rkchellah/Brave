@@ -25,6 +25,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 import firebase_admin
 from firebase_admin import credentials, db
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import credentials as mt5_credentials  # noqa: E402  (src/credentials.py)
+
 from config import (
     FIREBASE_CREDENTIALS,
     FIREBASE_DATABASE_URL,
@@ -46,8 +50,18 @@ def main() -> None:
         sys.exit(f"ERROR: Firebase credentials '{FIREBASE_CREDENTIALS}' not found. "
                  "Run this from the project root.")
 
-    if not (MT5_LOGIN and MT5_PASSWORD and MT5_SERVER):
-        sys.exit("ERROR: config.py is missing MT5_LOGIN / MT5_PASSWORD / MT5_SERVER — nothing to seed.")
+    login, password, server = MT5_LOGIN, MT5_PASSWORD, MT5_SERVER
+    if not (login and password and server):
+        if not mt5_credentials.can_prompt():
+            sys.exit("ERROR: no MT5_LOGIN / MT5_PASSWORD / MT5_SERVER and no terminal to prompt on.")
+        print("WARNING: this writes the broker password to Firebase in plain text.")
+        print("The bot does not need it there — it prompts for credentials at startup.")
+        if input("Continue? [y/N]: ").strip().lower() != "y":
+            sys.exit("Aborted — nothing written.")
+        login, password, server, _ = mt5_credentials.prompt_credentials(
+            default_login=MT5_LOGIN,
+            default_server=MT5_SERVER,
+        )
 
     try:
         if not firebase_admin._apps:
@@ -68,9 +82,9 @@ def main() -> None:
         return
 
     payload = {
-        "login":      int(MT5_LOGIN),
-        "password":   MT5_PASSWORD,
-        "server":     MT5_SERVER,
+        "login":      int(login),
+        "password":   password,
+        "server":     server,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "updated_by": "seed_script",
     }

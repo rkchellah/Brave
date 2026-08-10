@@ -50,6 +50,7 @@ from config import (  # noqa: E402
     ConfigError,
     validate_config,
 )
+import credentials as mt5_credentials  # noqa: E402
 from graph import run_brave_graph  # noqa: E402
 from news_filter import NewsFilter  # noqa: E402
 from trade_executor import place_order  # noqa: E402
@@ -136,14 +137,32 @@ class BraveBot:
 
     def _read_mt5_credentials(self) -> tuple[int, str, str, str]:
         """
-        Firebase first, config.py as backup.
+        Environment or terminal prompt first, then Firebase, then config.py.
 
-        Firebase wins only when login, password and server are all present and
-        usable — a half-filled node would otherwise lock the bot out of the
-        account with no way to recover from the app.
+        The password is not stored anywhere on this machine: it is typed at
+        startup with echo off, or supplied by MT5_PASSWORD for unattended runs.
+        The remote/config paths are the last resort for a headless run with no
+        environment set, and Firebase wins there only when login, password and
+        server are all present and usable — a half-filled node would otherwise
+        lock the bot out of the account with no way to recover from the app.
 
         Returns (login, password, server, source). The password is never logged.
         """
+        from_env = mt5_credentials.env_credentials()
+        if from_env is not None:
+            return from_env
+
+        if mt5_credentials.can_prompt():
+            return mt5_credentials.prompt_credentials(
+                default_login=MT5_LOGIN,
+                default_server=MT5_SERVER,
+            )
+
+        log.warning(
+            "No terminal to prompt on and MT5_LOGIN/MT5_PASSWORD/MT5_SERVER not all set "
+            "— falling back to stored credentials"
+        )
+
         fallback = (MT5_LOGIN, MT5_PASSWORD, MT5_SERVER, "config.py fallback")
 
         if not self.firebase_enabled:
@@ -185,7 +204,18 @@ class BraveBot:
     def _init_mt5(self) -> bool:
         """Connect to MT5, retrying briefly — the terminal is often still booting."""
         login, password, server, source = self._resolve_mt5_credentials()
-        log.info(f"MT5 credentials source: {source} | Login: {login} | Server: {server}")
+        if login <= 0 or not password or not server:
+            log.error(
+                f"Broker credentials incomplete (source: {source}) — set MT5_LOGIN, "
+                "MT5_PASSWORD and MT5_SERVER, or run the bot from a terminal so it can prompt"
+            )
+            return False
+
+        fingerprint = mt5_credentials.password_fingerprint(login, server, password)
+        log.info(
+            f"MT5 credentials source: {source} | Login: {login} | Server: {server} "
+            f"| Password fingerprint: {fingerprint}"
+        )
 
         for attempt in range(1, self.MT5_RETRY_ATTEMPTS + 1):
             try:

@@ -87,26 +87,65 @@ The bot logs into the same account the terminal uses.
 
 Create `config.py` in the project root (it is gitignored — never commit it):
 
-```python
-MT5_LOGIN         = 12345678
-MT5_PASSWORD      = "your_password"
-MT5_SERVER        = "RoboForex-Demo"
-
-FIREBASE_DATABASE_URL = "https://your-project-default-rtdb.firebaseio.com/"
-USER_ID               = "your_firebase_uid"
-
-DEEPSEEK_API_KEY  = "sk-..."
-FINNHUB_API_KEY   = "..."
-
-EXECUTION_MODE    = "MANUAL"   # start here, switch to AUTO once verified
-```
-
-Every value can be overridden by an environment variable of the same name:
+Secrets live in `.env`, not in `config.py`. Copy the template and fill it in:
 
 ```powershell
-$env:MT5_PASSWORD = "..."      # current session
-setx MT5_PASSWORD "..."        # persistent
+Copy-Item .env.example .env
+notepad .env
 ```
+
+```
+DEEPSEEK_API_KEY=sk-...
+FINNHUB_API_KEY=...
+FIREBASE_DATABASE_URL=https://your-project-default-rtdb.firebaseio.com/
+USER_ID=your_firebase_uid
+MT5_LOGIN=12345678            # prompt default only
+MT5_SERVER=RoboForex-Demo     # prompt default only
+```
+
+There is no `MT5_PASSWORD` line — the bot asks for it on the terminal at every
+start (see "Broker credentials" below).
+
+`config.py` holds only non-secret defaults and can stay as shipped. Anything in
+it can be overridden from `.env`, and a real environment variable beats both:
+
+```
+environment variable  >  .env  >  config.py default
+```
+
+Both `.env` and `config.py` are gitignored; `.env.example` is committed as the
+template, so never put a real key in it.
+
+`EXECUTION_MODE=MANUAL` is a good starting point — switch to AUTO once verified.
+
+Broker credentials
+------------------
+The bot does not keep the broker password anywhere. On every start it prompts:
+
+    ============================================================
+     Broker credentials — not stored, required each run
+    ============================================================
+     MT5 login [12345678]:            <- Enter accepts the config.py default
+     MT5 server [RoboForex-Demo]:     <- Enter accepts the config.py default
+     MT5 password (hidden):           <- not echoed, never written to disk
+     Password fingerprint: 041950108311
+
+The fingerprint is a salted SHA-256 of the password, truncated. It cannot be
+turned back into the password; it exists so you can confirm you typed the same
+password as the previous run (the same line appears in the log).
+
+The password itself cannot be stored hashed — MT5 authenticates with the real
+secret, so a hash would be useless to log in with.
+
+For an unattended run (scheduled task, service) with no terminal to type into,
+set all three environment variables and the prompt is skipped:
+
+```powershell
+$env:MT5_LOGIN = "12345678"; $env:MT5_PASSWORD = "..."; $env:MT5_SERVER = "RoboForex-Demo"
+```
+
+Every other config value can also be overridden by an environment variable of
+the same name (`$env:NAME = "..."` for the session, `setx NAME "..."` to persist).
 
 Verify the config parses and validates:
 
@@ -179,12 +218,18 @@ The terminal is not running, or it is running as a different Windows user. Start
 retry — the bot makes 3 attempts before giving up.
 
 **`MT5 login failed`**
-Wrong login/password/server. Check the log line above it for which source was used
-(`Firebase` or `config.py fallback`) and fix that one.
+Wrong login/password/server. The log line above it names the source
+(`terminal prompt`, `environment`, `Firebase` or `config.py fallback`) and shows the
+password fingerprint — compare it with a run that worked to see if you mistyped.
+
+**`Broker credentials incomplete`**
+The bot had no terminal to prompt on and no usable stored credentials. Run it from a
+console, or set MT5_LOGIN, MT5_PASSWORD and MT5_SERVER in the environment.
 
 **`MT5 credentials source: config.py fallback` when you expected Firebase**
 The `mt5_config` node is missing a field. All three of login, password and server must be
-present and valid, or the bot deliberately falls back.
+present and valid, or the bot deliberately falls back. Note this path is only reached on
+an unattended run — a terminal run always prompts.
 
 **`Account reports trading NOT allowed`**
 Algo Trading is off in the terminal, or the broker disabled trading on the account.

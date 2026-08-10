@@ -299,14 +299,18 @@ same signal on the next cycle.
 
 ---
 
-## Configuration (`config.py`)
+## Configuration (`config.py` + `.env`)
 
-Every value can be overridden by an environment variable of the same name; the literals in
-`config.py` are fallbacks. `validate_config()` runs at startup, raising `ConfigError` on
-values that make trading unsafe and returning warnings for the rest.
+Resolution order is **environment variable → `.env` → `config.py` default**. `config.py`
+loads `.env` from the project root at import time via its own `load_dotenv()` (no
+dependency), and never overwrites a variable already set in the environment. Secrets go in
+`.env`; `config.py` holds only non-secret defaults. `validate_config()` runs at startup,
+raising `ConfigError` on values that make trading unsafe and returning warnings for the rest.
 
 ```
-MT5_LOGIN, MT5_PASSWORD, MT5_SERVER          # broker (Firebase mt5_config takes priority)
+MT5_LOGIN, MT5_PASSWORD, MT5_SERVER          # broker — all three set = no startup prompt
+                                             # otherwise credentials.py prompts on the terminal;
+                                             # Firebase mt5_config / config.py only when headless
 FIREBASE_DATABASE_URL, FIREBASE_CREDENTIALS, USER_ID
 SYMBOLS, TIMEFRAME, LOT_SIZE, MAX_TRADES
 RISK_PER_TRADE_PCT, DAILY_LOSS_LIMIT_PCT
@@ -314,7 +318,8 @@ DEEPSEEK_API_KEY, FINNHUB_API_KEY
 EXECUTION_MODE, SIGNAL_EXPIRY_SECONDS
 ```
 
-Never commit `config.py` or `serviceAccountKey.json`. Both are in `.gitignore`.
+Never commit `.env`, `config.py` or `serviceAccountKey.json` — all three are in
+`.gitignore`. `.env.example` is the committed template and must stay free of real values.
 
 ---
 
