@@ -130,6 +130,10 @@
 | Aug 9 2026 | Finnhub general-news fetched per symbol per cycle — free-tier rate limit | Resolved | Module-level feed cache, 5-minute TTL |
 | Aug 9 2026 | `mt5_config` stores the broker password in plaintext in Realtime Database | Open — accepted | Mitigate with UID-scoped DB rules; encryption-at-rest not implemented |
 | Aug 9 2026 | LangChain Pydantic v1 warning on Python 3.14 | Open — monitored | Non-blocking; `graph.py` breaks at import if v1 support is dropped |
+| Aug 10 2026 | Broker password and both API keys hardcoded as literal defaults in `config.py` | Resolved | Keys moved to gitignored `.env` (`load_dotenv()` in `config.py`); password prompted at startup via new `src/credentials.py`, never stored |
+| Aug 10 2026 | Finnhub key leaked to GitHub in `sentiment_log.2026-04-06` (logged inside a Finnhub error URL) | Resolved | Key rotated Aug 10 2026, old one revoked and verified live; history not rewritten — rotation kills the leaked value |
+| Aug 10 2026 | MT5 password leaked to GitHub in `backtest/backtest_flow.py:88` @ `e40ec49` | Open — accepted | Demo account, risk accepted; password no longer in any source file |
+| Aug 10 2026 | `src/seed_mt5_config.py` writes the broker password to Firebase in plaintext | Open — accepted | Now warns and requires confirmation before writing; see the `mt5_config` row above |
 
 ---
 

@@ -39,6 +39,23 @@
 
 ---
 
+## [2026-08-10] Broker password and API keys hardcoded in `config.py`
+**Symptom:** No runtime symptom — the bot ran normally. Found by reading `config.py`: the live broker password and both API keys sat as literal string defaults, readable by anyone with the machine, a backup, or a screen-share.
+**Root cause:** `_env_str(name, default)` was designed so env vars *could* override, but the real secrets were used as the fallback literals — so the secure path was optional and nobody took it. A default that works is a default nobody replaces.
+**Fix:** Secrets removed from source. API keys moved to `.env` (gitignored) loaded by a new `load_dotenv()` in `config.py`; resolution is env var → `.env` → non-secret default. Broker password removed entirely — `src/credentials.py` prompts for it at startup with echo off and it is never written to disk. `bot.py._read_mt5_credentials()` resolves env → prompt → Firebase → config. Not hashable: MT5 authenticates with the real secret, so a salted SHA-256 *fingerprint* is logged instead to confirm which password was typed.
+**Pattern tag:** `secret-in-source`
+
+---
+
+## [2026-08-10] Secrets committed to git history and pushed to GitHub
+**Symptom:** No runtime symptom. Found by pickaxe-searching history during the fix above.
+**Blast radius:** Finnhub key `d6t5bj9r…` in `sentiment_log.2026-04-06` — the key travelled inside a logged Finnhub error URL (`?token=…`), and the log file was committed before `.gitignore` covered `sentiment_log*`; present through `f8d46ba`, `684b2c5`, `cfc622a`, `c89a760`. MT5 password in `backtest/backtest_flow.py:88` @ `e40ec49` (2026-02-01), removed from the tree later but still in history. Repo is on GitHub (`rkchellah/Brave-trading-agent`), so both must be treated as public since their commit dates. DeepSeek key, `config.py` and `serviceAccountKey.json` were never tracked. HEAD tree is clean.
+**Root cause:** Two separate paths, one class — a secret reached a file nobody thought of as a secret. `.gitignore` was written for the files known to hold credentials; a *log* that happened to echo a key in a URL was not one of them, and neither was a backtest script with a copy-pasted password block.
+**Fix:** Finnhub key rotated 2026-08-10 and the old one revoked — verified live (`fetch_news_for_symbol`: 4 headlines EURUSD, 8 XAUUSD). MT5 password accepted as-is: demo account. History **not** rewritten — rotation makes the leaked values dead, and a force-push would break existing clones. Prevention is the `secret-in-source` fix above: with no secret in any source file, nothing is left to leak into a log or a copy-paste.
+**Pattern tag:** `secret-in-committed-artifact`
+
+---
+
 ## Patterns Observed
 
 | Pattern tag | Count |
@@ -47,5 +64,12 @@
 | `no-process-check` | 1 |
 | `silent-fail-open` | 1 |
 | `never-actually-worked` | 1 |
+| `secret-in-source` | 1 |
+| `secret-in-committed-artifact` | 1 |
 
 A tag reaching 2+ means the same class of mistake is recurring — fix the class, not just the instance.
+
+The two `secret-*` tags are one class seen from both ends — a secret written into a file that
+was never meant to hold one. Counted separately because the fixes differ (remove from source
+vs. rotate what already shipped), but treat a second occurrence of *either* as the class
+recurring: no secret goes in any tracked file, and anything that logs a URL gets masked.
