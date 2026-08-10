@@ -21,6 +21,21 @@
 - Update `CHECKLIST.md` when tasks are completed or new issues are found.
 - Update `ARCHITECTURE.md` when the stack or data flow changes.
 - Log every bug and fix in the Known Issues table in CHECKLIST.md.
+- Log every **live-testing** bug in `bug_log.md` — see Testing & Debugging below.
+
+---
+
+## Testing & Debugging
+
+- `bug_log.md` at the project root is the running log of bugs found during live testing.
+  It records the root-cause *pattern*, not just the fix, so repeated classes of mistake become visible.
+- **A live-testing bug is not "fixed" until it has an entry in `bug_log.md`.** Writing the entry is part
+  of the definition of done, not an optional afterthought.
+- Entry format: `## [Date] Short title`, then **Symptom**, **Root cause** (one phrase), **Fix**
+  (what changed, file/function), **Pattern tag** (short reusable category).
+- Update the **Patterns Observed** tally at the bottom of `bug_log.md` with every entry.
+  A tag hitting 2+ is a signal to fix the class of mistake, not just the instance.
+- Before debugging, check `bug_log.md` — the same pattern may already be documented.
 
 ---
 
