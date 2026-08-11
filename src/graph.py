@@ -36,7 +36,7 @@ from config import DAILY_LOSS_LIMIT_PCT, MAX_TRADES, SIGNAL_EXPIRY_SECONDS
 from flow import Flow
 from news_fetcher import fetch_news_for_symbol, format_headlines_for_llm
 from trade_executor import ExecutionError, place_order, validate_signal
-from trade_logger import log_signal
+from trade_logger import log_detect_attempt, log_signal
 
 log = logging.getLogger(__name__)
 
@@ -77,14 +77,21 @@ def node_detect(state: BraveState) -> BraveState:
     log.info(f"[DETECT] Running Flow on {symbol}...")
 
     try:
-        signal = Flow(state["config"]).analyze(symbol)
+        flow = Flow(state["config"])
+        signal = flow.analyze(symbol)
     except Exception as e:
         log.error(f"[DETECT] {symbol}: Strategy error — {e}")
         traceback.print_exc()
+        log_detect_attempt({
+            "symbol":  symbol,
+            "outcome": "no-signal",
+            "reason":  f"strategy_error: {e}",
+        })
         return _abort(state, f"Strategy error: {e}")
 
     if signal is None:
         log.info(f"[DETECT] {symbol}: No signal")
+        _log_detect_attempt(symbol, flow.last_attempt)
         return _abort(state, "No signal from Flow")
 
     # Reject a malformed signal here rather than at the broker
@@ -92,10 +99,27 @@ def node_detect(state: BraveState) -> BraveState:
         signal = validate_signal(symbol, signal)
     except ExecutionError as e:
         log.warning(f"[DETECT] {symbol}: Rejected malformed signal — {e}")
+        attempt = dict(flow.last_attempt or {})
+        attempt.update({
+            "symbol":        symbol,
+            "outcome":       "no-signal",
+            "reason":        f"malformed_signal: {e}",
+            "sweep_reclaim": attempt.get("sweep_reclaim") or "yes",
+        })
+        log_detect_attempt(attempt)
         return _abort(state, str(e))
 
+    _log_detect_attempt(symbol, flow.last_attempt)
     log.info(f"[DETECT] {symbol}: {signal['direction']} signal — Entry {signal['entry_price']}")
     return {**state, "signal": signal, "abort": False, "abort_reason": ""}
+
+
+def _log_detect_attempt(symbol: str, attempt: dict | None) -> None:
+    """Write one flow_attempts.csv row for this DETECT (including near-misses)."""
+    row = dict(attempt or {})
+    row.setdefault("symbol", symbol)
+    row.setdefault("outcome", "no-signal")
+    log_detect_attempt(row)
 
 
 # ── Node 2: ANALYSE ───────────────────────────────────────────────────

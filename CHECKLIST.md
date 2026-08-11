@@ -62,6 +62,8 @@
 - [x] Filling-mode fallback (IOC → FOK → RETURN)
 - [x] Transient retcodes retried once at a refreshed price
 - [x] Every execution appended to `logs/trades/trades_YYYY-MM-DD.csv`
+- [x] Every DETECT attempt appended to `logs/flow_attempts.csv` (near-misses included)
+- [x] Full setups that leave DETECT appended to `logs/trade_log.csv`
 - [ ] Live execution verified end-to-end on the demo account
 
 ---

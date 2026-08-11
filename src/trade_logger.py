@@ -1,8 +1,11 @@
 """
-trade_logger.py — Append-only CSV log of every Flow signal that reaches ANALYSE.
+trade_logger.py — Append-only CSV logs for Flow signals and DETECT attempts.
 
-One row per signal lifecycle write. Exit fields stay blank until
-update_trade_outcome() patches the row when the MT5 position closes.
+log_signal()         → logs/trade_log.csv       (full setups that leave DETECT)
+log_detect_attempt() → logs/flow_attempts.csv   (every DETECT, including near-misses)
+
+Exit fields on trade_log stay blank until update_trade_outcome() patches the
+row when the MT5 position closes.
 """
 
 from __future__ import annotations
@@ -11,12 +14,14 @@ import csv
 import logging
 import os
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 log = logging.getLogger(__name__)
 
 LOG_DIR  = Path("logs")
 LOG_PATH = LOG_DIR / "trade_log.csv"
+ATTEMPT_PATH = LOG_DIR / "flow_attempts.csv"
 
 COLUMNS = [
     "timestamp",
@@ -36,6 +41,16 @@ COLUMNS = [
     "pnl",
 ]
 
+ATTEMPT_COLUMNS = [
+    "timestamp",
+    "symbol",
+    "h1_trend",
+    "aoi_distance_pips",
+    "sweep_reclaim",
+    "outcome",
+    "reason",
+]
+
 
 def log_signal(row: dict) -> None:
     """
@@ -44,19 +59,21 @@ def log_signal(row: dict) -> None:
     Missing columns are written as empty strings. Extra keys are ignored.
     Never raises — a log failure must not block trading.
     """
-    try:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        is_new = not LOG_PATH.exists() or LOG_PATH.stat().st_size == 0
+    _append_row(LOG_PATH, COLUMNS, row, label="signal log")
 
-        payload = {col: _cell(row.get(col)) for col in COLUMNS}
 
-        with LOG_PATH.open("a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=COLUMNS)
-            if is_new:
-                writer.writeheader()
-            writer.writerow(payload)
-    except OSError as e:
-        log.error(f"[trade_logger] Could not write signal log: {e}")
+def log_detect_attempt(row: dict) -> None:
+    """
+    Append one DETECT attempt to logs/flow_attempts.csv.
+
+    Captures near-misses (AOI distance, missing sweep, ranging, etc.) so a
+    week of observation can answer whether Flow is too strict.
+    Never raises.
+    """
+    payload = dict(row)
+    if not payload.get("timestamp"):
+        payload["timestamp"] = datetime.now(timezone.utc).isoformat()
+    _append_row(ATTEMPT_PATH, ATTEMPT_COLUMNS, payload, label="detect attempt log")
 
 
 def update_trade_outcome(
@@ -151,6 +168,21 @@ def _patch_latest_hitl(symbol: str, mt5_ticket: str | None = None, outcome: str 
     except OSError as e:
         log.error(f"[trade_logger] Could not patch HITL row for {symbol}: {e}")
         return False
+
+
+def _append_row(path: Path, columns: list[str], row: dict, *, label: str) -> None:
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        is_new = not path.exists() or path.stat().st_size == 0
+        payload = {col: _cell(row.get(col)) for col in columns}
+
+        with path.open("a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=columns)
+            if is_new:
+                writer.writeheader()
+            writer.writerow(payload)
+    except OSError as e:
+        log.error(f"[trade_logger] Could not write {label}: {e}")
 
 
 def _rewrite(rows: list[dict]) -> None:

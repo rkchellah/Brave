@@ -65,10 +65,35 @@ class Flow:
 
     def __init__(self, config: dict):
         self.config = config
+        # Set by every analyze() call for instrumentation (graph → trade_logger).
+        # Does not affect signal decisions.
+        self.last_attempt: dict | None = None
         logging.info("✅ Flow — Multi-Session Scalper loaded")
         logging.info("   Sessions: Pre-London(06-08) London(08-11) Bridge(11-13) NY(13-16) UTC")
         logging.info("   Entry: M15 sweep+reclaim | H1 trend filter | ATR SL")
         logging.info(f"   RR: {self.MIN_RR} minimum | AOI: {self.MIN_AOI_TOUCHES}+ touches")
+
+    def _record_attempt(
+        self,
+        symbol: str,
+        *,
+        outcome: str,
+        reason: str = "",
+        h1_trend: str = "",
+        aoi_distance_pips: float | None = None,
+        sweep_reclaim: str = "",
+    ) -> None:
+        """Snapshot this DETECT attempt for CSV logging — no trading side effects."""
+        self.last_attempt = {
+            "symbol":            symbol,
+            "h1_trend":          h1_trend,
+            "aoi_distance_pips": (
+                "" if aoi_distance_pips is None else round(float(aoi_distance_pips), 1)
+            ),
+            "sweep_reclaim":     sweep_reclaim,
+            "outcome":           outcome,
+            "reason":            reason,
+        }
 
     # ═══════════════════════════════════════════════════════════════
     # PUBLIC ENTRY POINT
@@ -84,11 +109,13 @@ class Flow:
                           mt5.TIMEFRAME_M15: list[dict],
                       }
         """
+        self.last_attempt = None
         logging.info(f"   [{symbol}] Flow: Starting multi-session scalp analysis...")
 
         # ── 1. Session filter (live only) ────────────────────────
         if provided_rates is None and not self._is_active_session():
             logging.info(f"   [{symbol}] Flow: Outside session window — skipping")
+            self._record_attempt(symbol, outcome="no-signal", reason="outside_session")
             return None
 
         # ── 2. Fetch candles ─────────────────────────────────────
@@ -97,6 +124,7 @@ class Flow:
 
         if not h1_candles or not m15_candles:
             logging.error(f"   [{symbol}] Flow: Insufficient H1/M15 data")
+            self._record_attempt(symbol, outcome="no-signal", reason="insufficient_data")
             return None
 
         # ── 3. Get pip point ─────────────────────────────────────
@@ -108,12 +136,18 @@ class Flow:
 
         if h1_trend == "RANGING":
             logging.info(f"   [{symbol}] Flow: H1 ranging — no scalp setup")
+            self._record_attempt(
+                symbol, outcome="no-signal", reason="h1_ranging", h1_trend=h1_trend,
+            )
             return None
 
         # ── 5. Find AOI on H1 ────────────────────────────────────
         aoi = self._find_aoi(h1_candles, h1_trend, point)
         if aoi is None:
             logging.info(f"   [{symbol}] Flow: No AOI found on H1")
+            self._record_attempt(
+                symbol, outcome="no-signal", reason="no_aoi", h1_trend=h1_trend,
+            )
             return None
 
         logging.info(
@@ -130,6 +164,13 @@ class Flow:
                 f"   [{symbol}] Flow: Price {distance_pips:.1f} pips from AOI "
                 f"(max {self.PRICE_AT_AOI_PIPS}) — too far"
             )
+            self._record_attempt(
+                symbol,
+                outcome="no-signal",
+                reason="aoi_too_far",
+                h1_trend=h1_trend,
+                aoi_distance_pips=distance_pips,
+            )
             return None
 
         logging.info(f"   [{symbol}] Flow: Price {distance_pips:.1f} pips from AOI ✅")
@@ -138,6 +179,14 @@ class Flow:
         sweep = self._detect_sweep(m15_candles[-10:], aoi, h1_trend, point)
         if sweep is None:
             logging.info(f"   [{symbol}] Flow: No M15 sweep+reclaim pattern")
+            self._record_attempt(
+                symbol,
+                outcome="no-signal",
+                reason="no_sweep_reclaim",
+                h1_trend=h1_trend,
+                aoi_distance_pips=distance_pips,
+                sweep_reclaim="no",
+            )
             return None
 
         logging.info(
@@ -149,10 +198,38 @@ class Flow:
         atr_pips = self._calculate_atr(m15_candles, point)
         if atr_pips is None or atr_pips < 1.0:
             logging.info(f"   [{symbol}] Flow: ATR too low — dead market")
+            self._record_attempt(
+                symbol,
+                outcome="no-signal",
+                reason="atr_too_low",
+                h1_trend=h1_trend,
+                aoi_distance_pips=distance_pips,
+                sweep_reclaim="yes",
+            )
             return None
 
         # ── 9. Build signal ──────────────────────────────────────
-        return self._build_signal(symbol, current_price, aoi, sweep, atr_pips, point, h1_trend)
+        signal = self._build_signal(symbol, current_price, aoi, sweep, atr_pips, point, h1_trend)
+        if signal is None:
+            self._record_attempt(
+                symbol,
+                outcome="no-signal",
+                reason="signal_build_failed",
+                h1_trend=h1_trend,
+                aoi_distance_pips=distance_pips,
+                sweep_reclaim="yes",
+            )
+            return None
+
+        self._record_attempt(
+            symbol,
+            outcome="signal",
+            reason="",
+            h1_trend=h1_trend,
+            aoi_distance_pips=distance_pips,
+            sweep_reclaim="yes",
+        )
+        return signal
 
     # ═══════════════════════════════════════════════════════════════
     # SIGNAL BUILDER
