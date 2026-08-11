@@ -54,7 +54,7 @@ import credentials as mt5_credentials  # noqa: E402
 from graph import run_brave_graph  # noqa: E402
 from news_filter import NewsFilter  # noqa: E402
 from trade_executor import place_order  # noqa: E402
-from trade_logger import attach_ticket, mark_hitl_outcome  # noqa: E402
+from trade_logger import attach_ticket, log_detect_attempt, mark_hitl_outcome  # noqa: E402
 
 BOT_VERSION = "Brave v3.0"
 
@@ -602,6 +602,15 @@ class BraveBot:
             try:
                 if not self.news_filter.is_safe_to_trade(symbol):
                     log.info(f"[{symbol}] Skipped — high-impact news window")
+                    # Same schema as Flow outside_session rows — gate before DETECT
+                    log_detect_attempt({
+                        "symbol":            symbol,
+                        "h1_trend":          "",
+                        "aoi_distance_pips": "",
+                        "sweep_reclaim":     "",
+                        "outcome":           "no-signal",
+                        "reason":            "news_filter_pause",
+                    })
                     continue
 
                 result = run_brave_graph(symbol, config, firebase_refs, execution_mode=mode)
@@ -618,6 +627,15 @@ class BraveBot:
             except Exception as e:
                 log.error(f"[{symbol}] Error during analysis: {e}")
                 traceback.print_exc()
+                # Guarantees a CSV row even if the graph never reached Flow.analyze()
+                log_detect_attempt({
+                    "symbol":            symbol,
+                    "h1_trend":          "",
+                    "aoi_distance_pips": "",
+                    "sweep_reclaim":     "",
+                    "outcome":           "no-signal",
+                    "reason":            f"analysis_error: {e}",
+                })
 
         account = mt5.account_info()
         self._update_status({

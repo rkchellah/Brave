@@ -24,7 +24,7 @@ The agent calls five nodes in sequence:
 
 Each node is a plain function. Routing is conditional edges on `BraveState`. The bot loop calls `run_brave_graph(symbol, config, firebase)` once per symbol per cycle.
 
-Every DETECT writes one row to `logs/flow_attempts.csv` (H1 trend, AOI distance, sweep+reclaim, signal/no-signal) — including near-misses. Full setups that leave DETECT also append to `logs/trade_log.csv`.
+Every DETECT writes one row to `logs/flow_attempts.csv` (H1 trend, AOI distance, sweep+reclaim, signal/no-signal) — including near-misses. News-filter pauses write the same schema with `reason=news_filter_pause` before DETECT runs. Full setups that leave DETECT also append to `logs/trade_log.csv`.
 
 ## Running locally
 
