@@ -23,6 +23,9 @@
 - [x] Command listener active — start/stop from the app
 - [x] Default nodes seeded on first run (`bot_config`, `brave_config`)
 - [x] Health check publishing to `health/` every 10 minutes
+- [x] Health includes `terminal_autotrading_enabled` (local AutoTrading toggle) in HEALTHY/DEGRADED
+- [x] True→False AutoTrading edge pushes a Firebase alert
+- [x] Settings shows AutoTrading with the same freshness gate as MT5 Connected
 
 ---
 

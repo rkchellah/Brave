@@ -947,6 +947,13 @@ const SettingsScreen = memo(function SettingsScreen() {
     ? 'neutral'
     : (health?.mt5_connected === true ? 'success' : 'danger');
 
+  const autoTradingLabel = !mt5Trusted
+    ? 'Unknown'
+    : (health?.terminal_autotrading_enabled === true ? 'On' : 'Off');
+  const autoTradingTone = !mt5Trusted
+    ? 'neutral'
+    : (health?.terminal_autotrading_enabled === true ? 'success' : 'danger');
+
   return (
     <View style={s.safe}>
       <ScrollView style={s.screen} contentContainerStyle={[s.scrollList, { paddingBottom: 100 }]}>
@@ -1010,6 +1017,10 @@ const SettingsScreen = memo(function SettingsScreen() {
           <View style={s.setRow}>
             <Text style={s.setKeyB}>MT5 Connected</Text>
             <StatusPill label={mt5Label} tone={mt5Tone} />
+          </View>
+          <View style={s.setRow}>
+            <Text style={s.setKeyB}>AutoTrading</Text>
+            <StatusPill label={autoTradingLabel} tone={autoTradingTone} />
           </View>
           <View style={s.setRow}>
             <Text style={s.setKeyB}>Account Trading</Text>

@@ -97,6 +97,7 @@ class BraveBot:
         self._session_start_equity = None
         self._last_session_date    = None
         self._mt5_credentials      = None   # (login, password, server, source), resolved at startup
+        self._last_health          = None   # previous health dict — for AutoTrading edge alerts
 
         self.news_filter = NewsFilter()
 
@@ -498,27 +499,34 @@ class BraveBot:
 
         health: dict = {
             # UTC ISO timestamp — app uses this to refuse stale mt5_connected
-            "timestamp":             datetime.now(timezone.utc).isoformat(),
-            "mt5_connected":         False,
-            "firebase_connected":    False,
-            "account_trade_allowed": False,
-            "symbols_available":     {},
-            "market_status":         {},
-            "active_strategy":       "flow",
-            "execution_mode":        self._get_execution_mode(),
-            "bot_version":           BOT_VERSION,
-            "status":                "UNKNOWN",
+            "timestamp":                       datetime.now(timezone.utc).isoformat(),
+            "mt5_connected":                   False,
+            "firebase_connected":              False,
+            "account_trade_allowed":           False,
+            # Local MT5 toolbar AutoTrading toggle — distinct from account.trade_allowed
+            "terminal_autotrading_enabled":    False,
+            "symbols_available":               {},
+            "market_status":                   {},
+            "active_strategy":                 "flow",
+            "execution_mode":                  self._get_execution_mode(),
+            "bot_version":                     BOT_VERSION,
+            "status":                          "UNKNOWN",
         }
 
         try:
             terminal = mt5.terminal_info()
             if terminal:
-                health["mt5_connected"]           = True
-                health["mt5_connected_to_broker"] = terminal.connected
+                health["mt5_connected"]                = True
+                health["mt5_connected_to_broker"]      = terminal.connected
+                health["terminal_autotrading_enabled"] = bool(terminal.trade_allowed)
             elif not self._reconnect_mt5():
                 log.error("Health check: MT5 unreachable and reconnect failed")
             else:
                 health["mt5_connected"] = True
+                terminal = mt5.terminal_info()
+                if terminal:
+                    health["mt5_connected_to_broker"]      = terminal.connected
+                    health["terminal_autotrading_enabled"] = bool(terminal.trade_allowed)
 
             if self.firebase_enabled:
                 try:
@@ -541,10 +549,35 @@ class BraveBot:
         except Exception as e:
             log.error(f"Health check error: {e}")
 
-        healthy = all((health["mt5_connected"], health["firebase_connected"],
-                       health["account_trade_allowed"]))
+        healthy = all((
+            health["mt5_connected"],
+            health["firebase_connected"],
+            health["account_trade_allowed"],
+            health["terminal_autotrading_enabled"],
+        ))
         health["status"] = "HEALTHY" if healthy else "DEGRADED"
         log.info("Health check PASSED" if healthy else "Health check DEGRADED — review logs")
+        if not health["terminal_autotrading_enabled"]:
+            log.warning(
+                "Health check: MT5 terminal AutoTrading is OFF "
+                "(toolbar toggle) — orders will be rejected"
+            )
+
+        # Loud alert only on True → False edge (not every DEGRADED cycle)
+        prev = self._last_health or {}
+        if (
+            prev.get("terminal_autotrading_enabled") is True
+            and health["terminal_autotrading_enabled"] is False
+        ):
+            log.error("MT5 AutoTrading disabled at terminal — pushing alert")
+            self._push_alert({
+                "alert_type": "AUTOTRADING_DISABLED",
+                "symbol":     "SYSTEM",
+                "error": (
+                    "MT5 AutoTrading disabled at terminal — "
+                    "no trades will execute until re-enabled."
+                ),
+            })
 
         if self.firebase_enabled:
             try:
@@ -552,6 +585,7 @@ class BraveBot:
             except Exception as e:
                 log.debug(f"Failed to push health: {e}")
 
+        self._last_health = health
         self.last_health_check = datetime.now()
         return healthy
 

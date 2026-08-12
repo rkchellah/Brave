@@ -56,16 +56,33 @@
 
 ---
 
+## [2026-08-12] MT5 terminal AutoTrading was off — not a Brave bug
+**Symptom:** Multiple execution attempts failed with `AutoTrading disabled by client`; five EURUSD retries yesterday, plus USDCAD attempts today that were separately blocked by DeepSeek OPPOSE.
+**Root cause:** Not a code bug — the MT5 desktop terminal's own AutoTrading toggle was manually off. Confirmed visually: toolbar button lacked the green play-icon state; after clicking it, icon changed and trading resumed.
+**Fix:** None needed in the order path. Health check now reads `terminal_info().trade_allowed` as `terminal_autotrading_enabled`, folds it into HEALTHY/DEGRADED, and pushes an Alerts-row on True→False edges — `src/bot.py`, `_health_check()`. Settings shows AutoTrading with the same freshness gate as MT5 Connected — `brave-app/App.js`. Operational note still stands: the toolbar toggle can reset on terminal restart; check it each session start.
+**Pattern tag:** `operator-toggle-not-checked` (new tag — distinct from `stale-data-trusted-as-current`, since nothing was stale here; the actual live state was simply never verified before assuming it matched intent)
+
+---
+
+## [2026-08-12] Health check watched the wrong AutoTrading flag
+**Symptom:** `Health check PASSED` logged repeatedly on 2026-08-11 and 2026-08-12 while every order attempt failed with `AutoTrading disabled by client`.
+**Root cause:** `_health_check()` read `mt5.account_info().trade_allowed` (broker-side account permission) but never read `mt5.terminal_info().trade_allowed` (the local AutoTrading toolbar toggle) — two different flags, and the health check treated only one of them as ground truth for "can this bot actually place trades." `terminal_info()` was already being called in the same function for `.connected`, but `.trade_allowed` on that same object was left unread.
+**Fix:** Added `terminal_autotrading_enabled` to the health payload, folded into the overall `healthy` computation. A True→False transition is detected against `self._last_health` and pushes a loud `AUTOTRADING_DISABLED` alert via `_push_alert`, not just a quiet `health_ref.set()`. Settings screen shows AutoTrading On/Off/Unknown with the same `mt5Trusted` freshness gate as MT5 Connected.
+**Pattern tag:** `stale-data-trusted-as-current`
+
+---
+
 ## Patterns Observed
 
 | Pattern tag | Count |
 | --- | --- |
-| `stale-data-trusted-as-current` | 1 |
+| `stale-data-trusted-as-current` | 2 |
 | `no-process-check` | 1 |
 | `silent-fail-open` | 1 |
 | `never-actually-worked` | 1 |
 | `secret-in-source` | 1 |
 | `secret-in-committed-artifact` | 1 |
+| `operator-toggle-not-checked` | 1 |
 
 A tag reaching 2+ means the same class of mistake is recurring — fix the class, not just the instance.
 

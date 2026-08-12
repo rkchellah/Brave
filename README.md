@@ -68,7 +68,9 @@ npm install --legacy-peer-deps
 eas build --platform android --profile preview
 ```
 
-Install the APK on an Android device. The app reads live from Firebase Realtime Database — no separate server. Screens: Dashboard (balance, equity, start/stop, AUTO/MANUAL), Signals (Confirm/Reject), Insights (DeepSeek verdict + Finnhub headlines), Alerts, Settings (Broker Account, Flow toggle, health).
+Install the APK on an Android device. The app reads live from Firebase Realtime Database — no separate server. Screens: Dashboard (balance, equity, start/stop, AUTO/MANUAL), Signals (Confirm/Reject), Insights (DeepSeek verdict + Finnhub headlines), Alerts, Settings (Broker Account, Flow toggle, health including MT5 AutoTrading toolbar state).
+
+Bot health is HEALTHY only when MT5 is connected, Firebase is reachable, the broker account allows trading, **and** the local MT5 AutoTrading toolbar toggle is on. A True→False flip on that toggle pushes an alert to the app.
 
 ## Connecting Firebase
 
