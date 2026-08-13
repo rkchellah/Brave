@@ -54,6 +54,7 @@ class Flow:
     ATR_PERIOD   = 14
     ATR_SL_MULT  = 1.2     # SL = 1.2 × ATR on M15
     MIN_RR       = 2.0    # Reduced from 2.0 for scalping
+    RR_EPSILON   = 1e-6   # Absorbs float round-trip error on the RR comparison
 
     # ─── Session windows (UTC) ─────────────────────────────────────
     SESSIONS = [
@@ -209,12 +210,14 @@ class Flow:
             return None
 
         # ── 9. Build signal ──────────────────────────────────────
-        signal = self._build_signal(symbol, current_price, aoi, sweep, atr_pips, point, h1_trend)
+        signal, build_reason = self._build_signal(
+            symbol, current_price, aoi, sweep, atr_pips, point, h1_trend
+        )
         if signal is None:
             self._record_attempt(
                 symbol,
                 outcome="no-signal",
-                reason="signal_build_failed",
+                reason=build_reason,
                 h1_trend=h1_trend,
                 aoi_distance_pips=distance_pips,
                 sweep_reclaim="yes",
@@ -244,8 +247,13 @@ class Flow:
         atr_pips: float,
         point: float,
         trend: str,
-    ) -> dict | None:
-        """Build scalp signal with ATR-based SL and 1.5:1 TP."""
+    ) -> tuple[dict | None, str]:
+        """
+        Build scalp signal with ATR-based SL and MIN_RR TP.
+
+        Returns (signal, reason). On failure signal is None and reason names the
+        actual cause, so the CSV distinguishes an RR reject from a zero-risk one.
+        """
 
         direction = sweep["direction"]
         entry     = current_price
@@ -262,13 +270,16 @@ class Flow:
         reward = abs(tp - entry)
 
         if risk == 0:
-            return None
+            return None, "zero_risk"
 
         rr_ratio = reward / risk
 
-        if rr_ratio < self.MIN_RR:
+        # TP was built as sl_distance * MIN_RR, so RR is MIN_RR by construction —
+        # but the multiply/divide round-trip is not exact in binary floating point
+        # and lands a hair under. Tolerate that; anything genuinely below still fails.
+        if rr_ratio < self.MIN_RR - self.RR_EPSILON:
             logging.info(f"   [{symbol}] Flow: RR {rr_ratio:.2f} < {self.MIN_RR} — skipping")
-            return None
+            return None, "rr_below_min"
 
         lot_size      = self.config.get("lot_size", 0.01)
         contract_size = 100_000
@@ -281,7 +292,7 @@ class Flow:
             f"RR={rr_ratio:.2f} ATR={atr_pips:.1f}pips"
         )
 
-        return {
+        signal = {
             "symbol":            symbol,
             "direction":         direction,
             "strategy_name":     "Flow",
@@ -304,6 +315,7 @@ class Flow:
                 "session":       self._current_session(),
             },
         }
+        return signal, ""
 
     # ═══════════════════════════════════════════════════════════════
     # INDICATORS

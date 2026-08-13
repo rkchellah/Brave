@@ -123,6 +123,32 @@ def update_trade_outcome(
         return False
 
 
+def list_open_fills() -> list[dict]:
+    """Rows that have an MT5 ticket but no exit yet — waiting for SL/TP/close."""
+    try:
+        if not LOG_PATH.exists():
+            return []
+        with LOG_PATH.open("r", newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+    except OSError as e:
+        log.error(f"[trade_logger] Could not read open fills: {e}")
+        return []
+
+    open_fills: list[dict] = []
+    for row in rows:
+        ticket = str(row.get("mt5_ticket", "")).strip()
+        if not ticket or ticket in ("0", "None"):
+            continue
+        if str(row.get("exit_price", "")).strip():
+            continue
+        open_fills.append({
+            "ticket": str(ticket),
+            "sl":     str(row.get("sl", "")).strip(),
+            "tp":     str(row.get("tp", "")).strip(),
+        })
+    return open_fills
+
+
 def attach_ticket(symbol: str, mt5_ticket: int | str, outcome: str = "EXECUTED") -> bool:
     """
     Attach a ticket to the latest HITL row for symbol (manual confirm path).

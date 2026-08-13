@@ -191,18 +191,18 @@ const PairIcon = memo(function PairIcon({ symbol, size = 44 }) {
 });
 
 // ── Shared UI ──────────────────────────────────────────────────────
-const StatusPill = memo(function StatusPill({ label, tone = 'neutral' }) {
-  const map = {
-    success: { bg: TINT.success, fg: theme.success },
-    danger:  { bg: TINT.danger,  fg: theme.danger },
-    accent:  { bg: TINT.accent,  fg: theme.accent },
-    neutral: { bg: theme.surfaceRaised, fg: theme.textSecondary },
-  };
-  const c = map[tone] ?? map.neutral;
+const TONE_FG = {
+  success: theme.success,
+  danger:  theme.danger,
+  accent:  theme.accent,
+  neutral: theme.textSecondary,
+};
+
+const StatusLabel = memo(function StatusLabel({ label, tone = 'neutral', style }) {
   return (
-    <View style={[s.pill, { backgroundColor: c.bg }]}>
-      <Text style={[s.pillTxt, { color: c.fg }]}>{label}</Text>
-    </View>
+    <Text style={[s.statusLabel, { color: TONE_FG[tone] ?? theme.textSecondary }, style]}>
+      {label}
+    </Text>
   );
 });
 
@@ -266,6 +266,7 @@ const SignalCard = memo(function SignalCard({ sigKey, sig, isExpanded, isBusy, o
   const isBuy = sig.direction === 'BUY';
   const status = String(sig.status ?? 'PENDING').toUpperCase();
   const isPending = status === 'PENDING';
+  const hitlKind = String(sig.hitl_kind || '').toLowerCase();
   const subText = getPairName(sig.symbol) || sig.strategy_name || null;
 
   const STATUS_TONE = {
@@ -288,16 +289,24 @@ const SignalCard = memo(function SignalCard({ sigKey, sig, isExpanded, isBusy, o
           <Text style={s.sigTitle}>{sig.symbol ?? DASH}</Text>
           {subText ? <Text style={s.sigSub}>{subText}</Text> : null}
           {!isPending && (
-            <View style={{ marginTop: theme.spacing.xs, alignSelf: 'flex-start' }}>
-              <StatusPill
-                label={sig.error ? `${status} — ${sig.error}` : status}
-                tone={STATUS_TONE[status] ?? 'neutral'}
-              />
-            </View>
+            <StatusLabel
+              label={sig.error ? `${status} — ${sig.error}` : status}
+              tone={STATUS_TONE[status] ?? 'neutral'}
+              style={{ marginTop: theme.spacing.xs }}
+            />
           )}
         </View>
         <View style={{ alignItems: 'flex-end' }}>
-          <StatusPill label={sig.direction ?? DASH} tone={isBuy ? 'success' : 'danger'} />
+          <StatusLabel label={sig.direction ?? DASH} tone={isBuy ? 'success' : 'danger'} />
+          {isPending && hitlKind === 'data_unavailable' ? (
+            <View style={{ marginTop: theme.spacing.xs }}>
+              <StatusLabel label="Data unavailable" tone="neutral" />
+            </View>
+          ) : isPending && hitlKind === 'genuine_uncertainty' ? (
+            <View style={{ marginTop: theme.spacing.xs }}>
+              <StatusLabel label="Mixed news" tone="accent" />
+            </View>
+          ) : null}
           <Text style={s.sigSlTp}>Entry: {sig.entry_price ?? DASH}</Text>
           <Text style={s.sigSlTp}>SL: {sig.suggested_sl ?? DASH}, TP: {sig.suggested_tp ?? DASH}</Text>
         </View>
@@ -305,7 +314,16 @@ const SignalCard = memo(function SignalCard({ sigKey, sig, isExpanded, isBusy, o
 
       {isExpanded && isPending && (
         <View style={s.sigExpanded}>
-          {sig.hitl_reason ? (
+          {hitlKind === 'data_unavailable' ? (
+            <>
+              <Text style={[s.gptText, { textAlign: 'center' }]}>
+                News data was unavailable — this is not a mixed-sentiment judgment.
+              </Text>
+              {sig.hitl_reason ? (
+                <Text style={[s.gptText, { textAlign: 'center' }]}>{sig.hitl_reason}</Text>
+              ) : null}
+            </>
+          ) : sig.hitl_reason ? (
             <Text style={[s.gptText, { textAlign: 'center' }]}>{sig.hitl_reason}</Text>
           ) : null}
           <SignalTimer expiresAt={sig.expires_at} />
@@ -380,7 +398,7 @@ const DashboardScreen = memo(function DashboardScreen() {
 
   const renderPnlBadge = () => (
     <View style={s.badgeWrap}>
-      <StatusPill
+      <StatusLabel
         label={pnlBadge}
         tone={pnlPct === null ? 'neutral' : (pnlPositive ? 'success' : 'danger')}
       />
@@ -437,7 +455,7 @@ const DashboardScreen = memo(function DashboardScreen() {
           </View>
           <View style={s.outlineRow}>
             <Text style={s.outlineLbl}>Bot</Text>
-            <StatusPill label={isRunning ? 'Running' : 'Stopped'} tone={isRunning ? 'success' : 'neutral'} />
+            <StatusLabel label={isRunning ? 'Running' : 'Stopped'} tone={isRunning ? 'success' : 'neutral'} />
           </View>
           <View style={s.outlineRow}>
             <Text style={s.outlineLbl}>Trading Pairs</Text>
@@ -583,8 +601,13 @@ const InsightsScreen = memo(function InsightsScreen() {
         ) : null}
 
         {entries.map(([pair, data]) => {
+          const unavailable = data.analysis_unavailable === true
+            || String(data.hitl_kind || '').toLowerCase() === 'data_unavailable';
           const verdict = String(data.verdict ?? 'UNCERTAIN').toUpperCase();
-          const vTone = verdict === 'CONFIRM' ? 'success' : verdict === 'OPPOSE' ? 'danger' : 'accent';
+          const pillLabel = unavailable ? 'DATA UNAVAILABLE' : verdict;
+          const vTone = unavailable
+            ? 'neutral'
+            : verdict === 'CONFIRM' ? 'success' : verdict === 'OPPOSE' ? 'danger' : 'accent';
           const headlines = Array.isArray(data.headlines) ? data.headlines : [];
           const count = isNum(data.article_count) ? data.article_count : headlines.length;
 
@@ -596,10 +619,14 @@ const InsightsScreen = memo(function InsightsScreen() {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={s.sigTitle}>{data.symbol || pair}</Text>
-                  <Text style={s.sigSub}>News check on {data.direction || DASH} signal</Text>
+                  <Text style={s.sigSub}>
+                    {unavailable
+                      ? 'News fetch or model failed — not a mixed-sentiment call'
+                      : `News check on ${data.direction || DASH} signal`}
+                  </Text>
                 </View>
                 <View style={{ alignItems: 'flex-end' }}>
-                  <StatusPill label={verdict} tone={vTone} />
+                  <StatusLabel label={pillLabel} tone={vTone} />
                   <Text style={s.sigSlTp}>{fmtTime(data.updated_at)}</Text>
                 </View>
               </View>
@@ -693,7 +720,7 @@ const AlertsScreen = memo(function AlertsScreen() {
                     ) : null}
                   </View>
                   <View style={{ alignItems: 'flex-end' }}>
-                    <StatusPill label={sig.direction ?? DASH} tone={isBuy ? 'success' : 'danger'} />
+                    <StatusLabel label={sig.direction ?? DASH} tone={isBuy ? 'success' : 'danger'} />
                     {isExecuted || isFailed ? (
                       strategyName ? <Text style={s.sigSlTp}>{strategyName}</Text> : null
                     ) : (
@@ -969,7 +996,7 @@ const SettingsScreen = memo(function SettingsScreen() {
           >
             <Text style={s.setLabel}>Flow</Text>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-              <StatusPill label={enabled ? 'Active' : 'Off'} tone={enabled ? 'success' : 'neutral'} />
+              <StatusLabel label={enabled ? 'Active' : 'Off'} tone={enabled ? 'success' : 'neutral'} />
               <MaterialCommunityIcons
                 name={expanded ? 'chevron-down' : 'chevron-right'} size={24} color={theme.textSecondary}
               />
@@ -1003,7 +1030,7 @@ const SettingsScreen = memo(function SettingsScreen() {
         <View style={s.setCard}>
           <View style={s.setRow}>
             <Text style={s.setKeyB}>Status</Text>
-            <StatusPill
+            <StatusLabel
               label={healthStatus}
               tone={healthStatus === 'HEALTHY' ? 'success' : healthStatus === DASH ? 'neutral' : 'accent'}
             />
@@ -1016,11 +1043,11 @@ const SettingsScreen = memo(function SettingsScreen() {
           </View>
           <View style={s.setRow}>
             <Text style={s.setKeyB}>MT5 Connected</Text>
-            <StatusPill label={mt5Label} tone={mt5Tone} />
+            <StatusLabel label={mt5Label} tone={mt5Tone} />
           </View>
           <View style={s.setRow}>
             <Text style={s.setKeyB}>AutoTrading</Text>
-            <StatusPill label={autoTradingLabel} tone={autoTradingTone} />
+            <StatusLabel label={autoTradingLabel} tone={autoTradingTone} />
           </View>
           <View style={s.setRow}>
             <Text style={s.setKeyB}>Account Trading</Text>
@@ -1163,14 +1190,7 @@ const s = StyleSheet.create({
   },
   badgeWrap: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
   todayTxt: { fontSize: 13, color: theme.textSecondary, fontWeight: '500' },
-
-  pill: {
-    borderRadius: 8,
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-    alignSelf: 'flex-start',
-  },
-  pillTxt: { fontSize: 11, fontWeight: '700', letterSpacing: 0.3 },
+  statusLabel: { fontSize: 14, fontWeight: '600' },
 
   outlineCard: {
     backgroundColor: theme.surface,

@@ -16,7 +16,8 @@ Routing:
     ANALYSE    → CONFIRM/UNCERTAIN    → RISK_CHECK
     RISK_CHECK → fail                 → END
     RISK_CHECK → MANUAL mode          → HITL
-    RISK_CHECK → pass + UNCERTAIN     → HITL
+    RISK_CHECK → pass + UNCERTAIN     → HITL   (genuine mixed news only)
+    ANALYSE    → data unavailable + AUTO → END (skip, do not HITL)
     RISK_CHECK → pass + CONFIRM       → EXECUTE
 
 Every node is total: it catches its own exceptions and returns a state that
@@ -56,6 +57,8 @@ class BraveState(TypedDict):
     sentiment:        Literal["CONFIRM", "OPPOSE", "UNCERTAIN"] | None
     sentiment_reason: str
     headlines:        list[dict]
+    analysis_unavailable: bool
+    hitl_kind:        str
     risk_ok:          bool
     risk_reason:      str
     abort:            bool
@@ -128,37 +131,57 @@ def node_analyse(state: BraveState) -> BraveState:
     direction = state["signal"]["direction"]
     log.info(f"[ANALYSE] Fetching news and querying DeepSeek for {symbol}...")
 
-    articles = []
+    articles: list[dict] = []
+    data_ok = False
     try:
-        articles = fetch_news_for_symbol(symbol)
-        verdict, reason = _ask_deepseek(symbol, direction, articles)
+        articles, data_ok = fetch_news_for_symbol(symbol)
+        if not data_ok:
+            verdict, reason = "UNCERTAIN", "analysis_unavailable — no usable headlines"
+            log.warning(f"[ANALYSE] {symbol}: {reason}")
+        else:
+            verdict, reason, data_ok = _ask_deepseek(symbol, direction, articles)
     except Exception as e:
         log.error(f"[ANALYSE] {symbol}: {e}")
-        verdict, reason = "UNCERTAIN", f"News analysis failed: {e}"
+        verdict, reason, data_ok = "UNCERTAIN", f"News analysis failed: {e}", False
+
+    unavailable = not data_ok
+    hitl_kind = "data_unavailable" if unavailable else (
+        "genuine_uncertainty" if verdict == "UNCERTAIN" else ""
+    )
 
     log.info(f"[ANALYSE] {symbol}: {verdict} — {reason}")
-    _publish_news_analysis(state, verdict, reason, direction, articles)
 
-    return {**state, "sentiment": verdict, "sentiment_reason": reason, "headlines": articles}
+    next_state: BraveState = {
+        **state,
+        "sentiment":             verdict,
+        "sentiment_reason":      reason,
+        "headlines":             articles,
+        "analysis_unavailable":  unavailable,
+        "hitl_kind":             hitl_kind,
+    }
+    _publish_news_analysis(next_state, verdict, reason, direction, articles)
+    if unavailable and str(state.get("execution_mode", "AUTO")).upper() == "AUTO":
+        log.info(f"[ANALYSE] {symbol}: AUTO skip — analysis_unavailable (not a HITL judgment)")
+        return _abort(next_state, "analysis_unavailable")
+    return next_state
 
 
-def _ask_deepseek(symbol: str, direction: str, articles: list[dict]) -> tuple[str, str]:
+def _ask_deepseek(symbol: str, direction: str, articles: list[dict]) -> tuple[str, str, bool]:
     """
     Ask DeepSeek whether the news supports the trade.
 
-    Returns (verdict, reason). Falls back to UNCERTAIN — never OPPOSE or
-    CONFIRM — when the API is unreachable, so an outage neither blocks nor
-    green-lights trades on its own.
+    Returns (verdict, reason, data_ok). data_ok is False on tool/API failure
+    so AUTO does not treat an outage as genuine UNCERTAIN.
     """
     from config import DEEPSEEK_API_KEY
 
     if not DEEPSEEK_API_KEY:
-        return "UNCERTAIN", "DEEPSEEK_API_KEY not configured"
+        return "UNCERTAIN", "DEEPSEEK_API_KEY not configured", False
 
     try:
         from openai import OpenAI
     except ImportError as e:
-        return "UNCERTAIN", f"openai package not installed: {e}"
+        return "UNCERTAIN", f"openai package not installed: {e}", False
 
     headlines = format_headlines_for_llm(symbol, articles)
     prompt = f"""You are a professional forex news analyst.
@@ -201,18 +224,22 @@ Fed hawkish tone supports dollar strength, aligning with the BUY signal on USDCH
             if attempt < DEEPSEEK_ATTEMPTS:
                 time.sleep(2)
 
-    return "UNCERTAIN", f"DeepSeek unavailable: {last_error}"
+    return "UNCERTAIN", f"DeepSeek unavailable: {last_error}", False
 
 
-def _parse_verdict(symbol: str, response) -> tuple[str, str]:
-    """Pull the verdict and reason out of a DeepSeek completion, defensively."""
+def _parse_verdict(symbol: str, response) -> tuple[str, str, bool]:
+    """Pull the verdict and reason out of a DeepSeek completion, defensively.
+
+    data_ok is True only when DeepSeek produced a usable CONFIRM/OPPOSE/UNCERTAIN.
+    Empty or unparseable replies are tool failure, not genuine mixed sentiment.
+    """
     choices = getattr(response, "choices", None)
     if not choices:
-        return "UNCERTAIN", "DeepSeek returned no choices"
+        return "UNCERTAIN", "DeepSeek returned no choices", False
 
     content = getattr(choices[0].message, "content", None)
     if not content or not content.strip():
-        return "UNCERTAIN", "DeepSeek returned an empty response"
+        return "UNCERTAIN", "DeepSeek returned an empty response", False
 
     lines   = content.strip().split("\n", 1)
     verdict = lines[0].strip().upper().strip(".:*# ")
@@ -222,11 +249,11 @@ def _parse_verdict(symbol: str, response) -> tuple[str, str]:
         # Tolerate a verdict wrapped in prose before giving up
         match = next((v for v in VALID_VERDICTS if v in content.upper()), None)
         if match:
-            return match, reason or content.strip()[:200]
+            return match, reason or content.strip()[:200], True
         log.warning(f"[ANALYSE] {symbol}: Unexpected verdict '{verdict}' — defaulting to UNCERTAIN")
-        return "UNCERTAIN", f"Unexpected response: {content.strip()[:150]}"
+        return "UNCERTAIN", f"Unexpected response: {content.strip()[:150]}", False
 
-    return verdict, reason
+    return verdict, reason, True
 
 
 def _publish_news_analysis(state: BraveState, verdict: str, reason: str,
@@ -250,10 +277,12 @@ def _publish_news_analysis(state: BraveState, verdict: str, reason: str,
                 }
                 for a in articles[:5]
             ],
-            "article_count": len(articles),
-            "news_source":   "Finnhub",
-            "model":         DEEPSEEK_MODEL,
-            "updated_at":    datetime.now(timezone.utc).isoformat(),
+            "article_count":          len(articles),
+            "news_source":            "Finnhub",
+            "model":                  DEEPSEEK_MODEL,
+            "analysis_unavailable":   bool(state.get("analysis_unavailable")),
+            "hitl_kind":              state.get("hitl_kind") or "",
+            "updated_at":             datetime.now(timezone.utc).isoformat(),
         })
     except Exception as e:
         log.error(f"[ANALYSE] Failed to publish news analysis: {e}")
@@ -275,6 +304,12 @@ def node_risk_check(state: BraveState) -> BraveState:
         open_count = len(positions) + len(orders)
         if open_count >= max_trades:
             return _risk_fail(state, f"Max trades ({max_trades}) already open on {symbol}")
+
+        # HITL queue is exposure too — MT5 cannot see a PENDING confirm.
+        pending_ref = state.get("firebase", {}).get("pending_signals_ref")
+        existing_hitl = _open_hitl_key(pending_ref, symbol)
+        if existing_hitl:
+            return _risk_fail(state, "duplicate_pending_signal")
 
         account = mt5.account_info()
         if account is None:
@@ -304,6 +339,30 @@ def node_risk_check(state: BraveState) -> BraveState:
 
 def _risk_fail(state: BraveState, reason: str) -> BraveState:
     return {**state, "risk_ok": False, "risk_reason": reason}
+
+
+def _open_hitl_key(pending_ref, symbol: str) -> str | None:
+    """Return the Firebase key of a PENDING/EXECUTING HITL row for this symbol."""
+    if pending_ref is None:
+        return None
+    try:
+        pending = pending_ref.get() or {}
+    except Exception as e:
+        log.warning(f"[HITL] Could not read pending_signals ({e})")
+        return None
+
+    if not isinstance(pending, dict):
+        return None
+
+    want = str(symbol).upper()
+    for key, sig in pending.items():
+        if not isinstance(sig, dict):
+            continue
+        if str(sig.get("symbol", "")).upper() != want:
+            continue
+        if str(sig.get("status", "")).upper() in ("PENDING", "EXECUTING"):
+            return str(key)
+    return None
 
 
 # ── Node 4a: EXECUTE ──────────────────────────────────────────────────
@@ -357,11 +416,29 @@ def node_hitl(state: BraveState) -> BraveState:
         log.warning(f"[HITL] {symbol}: Firebase unavailable — signal dropped")
         return {**state, "hitl_required": False}
 
+    existing = _open_hitl_key(pending_ref, symbol)
+    if existing:
+        log.info(
+            f"[HITL] {symbol}: skipped — duplicate_pending_signal "
+            f"(key={existing} still PENDING/EXECUTING)"
+        )
+        return {
+            **state,
+            "hitl_required": False,
+            "abort": True,
+            "abort_reason": "duplicate_pending_signal",
+        }
+
     try:
         pending_ref.push({
             **signal,
             "status":       "PENDING",
             "hitl_reason":  reason,
+            "hitl_kind":    state.get("hitl_kind") or (
+                "data_unavailable" if state.get("analysis_unavailable")
+                else "genuine_uncertainty" if state.get("sentiment") == "UNCERTAIN"
+                else "manual_mode"
+            ),
             "sentiment":    state.get("sentiment"),
             "pushed_at":    datetime.now(timezone.utc).isoformat(),
             "expires_at":   datetime.now(timezone.utc).timestamp() + SIGNAL_EXPIRY_SECONDS,
@@ -379,6 +456,11 @@ def route_after_detect(state: BraveState) -> str:
 
 
 def route_after_analyse(state: BraveState) -> str:
+    if state.get("abort"):
+        log.info(
+            f"[ROUTE] {state['symbol']}: ANALYSE abort — {state.get('abort_reason')}"
+        )
+        return END
     if state.get("sentiment") == "OPPOSE":
         log.info(f"[ROUTE] {state['symbol']}: OPPOSE — trade aborted")
         return END
@@ -438,6 +520,8 @@ def run_brave_graph(symbol: str, config: dict, firebase: dict,
         "sentiment":        None,
         "sentiment_reason": "",
         "headlines":        [],
+        "analysis_unavailable": False,
+        "hitl_kind":        "",
         "risk_ok":          False,
         "risk_reason":      "",
         "abort":            False,
@@ -489,6 +573,11 @@ def _log_signal_row(state: BraveState) -> None:
 
 
 def _risk_result_label(state: BraveState) -> str:
+    if state.get("abort_reason") == "analysis_unavailable" or (
+        state.get("analysis_unavailable")
+        and str(state.get("execution_mode", "")).upper() == "AUTO"
+    ):
+        return "SKIPPED"
     if state.get("sentiment") == "OPPOSE":
         return "SKIPPED"           # Never reached RISK_CHECK
     if state.get("risk_ok"):
@@ -498,6 +587,11 @@ def _risk_result_label(state: BraveState) -> str:
 
 
 def _outcome_label(state: BraveState) -> str:
+    if state.get("abort_reason") == "analysis_unavailable" or (
+        state.get("analysis_unavailable")
+        and str(state.get("execution_mode", "")).upper() == "AUTO"
+    ):
+        return "ANALYSIS_UNAVAILABLE"
     if state.get("sentiment") == "OPPOSE":
         return "OPPOSE"
     if not state.get("risk_ok"):

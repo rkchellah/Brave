@@ -8,12 +8,14 @@ trade_executor.py.
 
 Each main loop iteration:
     1. Refresh fast status (balance/equity/positions) for the mobile app
+       and back-fill trade_log.csv exits from MT5 history when a ticket closes
     2. Every CHECK_INTERVAL seconds:
        a. Health check (every HEALTH_CHECK_INTERVAL)
        b. Consume signals the user confirmed in the app (MANUAL mode)
        c. Daily loss limiter
        d. Re-score tradable pairs (every PAIR_REFRESH_INTERVAL)
        e. Run the graph on each open pair that passes the news filter
+          and is under MAX_TRADES (position+order count — same source as RISK_CHECK)
 """
 
 import logging
@@ -22,7 +24,7 @@ import os
 import sys
 import time as time_module
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import MetaTrader5 as mt5
 import firebase_admin
@@ -54,7 +56,13 @@ import credentials as mt5_credentials  # noqa: E402
 from graph import run_brave_graph  # noqa: E402
 from news_filter import NewsFilter  # noqa: E402
 from trade_executor import place_order  # noqa: E402
-from trade_logger import attach_ticket, log_detect_attempt, mark_hitl_outcome  # noqa: E402
+from trade_logger import (  # noqa: E402
+    attach_ticket,
+    list_open_fills,
+    log_detect_attempt,
+    mark_hitl_outcome,
+    update_trade_outcome,
+)
 
 BOT_VERSION = "Brave v3.0"
 
@@ -76,12 +84,24 @@ logging.basicConfig(level=logging.INFO, handlers=[_log_handler, _console])
 log = logging.getLogger(__name__)
 
 
+def _exit_reason_from_levels(price: float, sl: str, tp: str) -> str:
+    """When MT5 doesn't tag SL/TP, pick the closer of the logged levels."""
+    try:
+        sl_f, tp_f = float(sl), float(tp)
+    except (TypeError, ValueError):
+        return "CLOSED"
+    if abs(float(price) - sl_f) <= abs(float(price) - tp_f):
+        return "SL"
+    return "TP"
+
+
 class BraveBot:
     CHECK_INTERVAL        = 60     # seconds between signal checks
     HEALTH_CHECK_INTERVAL = 600    # seconds between health checks
     PAIR_REFRESH_INTERVAL = 3600   # seconds between pair re-scoring
     MARKET_CACHE_SECONDS  = 60     # market status cache lifetime
     MT5_RETRY_ATTEMPTS    = 3      # connection attempts at startup
+    RECONCILE_INTERVAL    = 15     # seconds between trade_log exit backfills
 
     def __init__(self):
         # firebase_enabled MUST be set first — the Firebase listener thread
@@ -98,6 +118,7 @@ class BraveBot:
         self._last_session_date    = None
         self._mt5_credentials      = None   # (login, password, server, source), resolved at startup
         self._last_health          = None   # previous health dict — for AutoTrading edge alerts
+        self._last_reconcile_at    = 0.0
 
         self.news_filter = NewsFilter()
 
@@ -647,6 +668,25 @@ class BraveBot:
                     })
                     continue
 
+                # Same count RISK_CHECK uses — cheap, so skip DETECT/ANALYSE
+                # rather than burning DeepSeek on a pair that cannot take another trade.
+                max_trades = int(config.get("max_trades", MAX_TRADES) or MAX_TRADES)
+                open_count = self._count_positions(symbol)
+                if open_count >= max_trades:
+                    log.info(
+                        f"[{symbol}] Skipped — max trades reached "
+                        f"({open_count}/{max_trades})"
+                    )
+                    log_detect_attempt({
+                        "symbol":            symbol,
+                        "h1_trend":          "",
+                        "aoi_distance_pips": "",
+                        "sweep_reclaim":     "",
+                        "outcome":           "no-signal",
+                        "reason":            "max_trades_reached",
+                    })
+                    continue
+
                 result = run_brave_graph(symbol, config, firebase_refs, execution_mode=mode)
 
                 if result.get("hitl_required"):
@@ -877,6 +917,96 @@ class BraveBot:
         except Exception as e:
             log.debug(f"Fast status update failed: {e}")
 
+    def _reconcile_closed_trades(self) -> None:
+        """Patch trade_log.csv exit columns from MT5 history when a logged ticket closes."""
+        now_ts = time_module.time()
+        if now_ts - self._last_reconcile_at < self.RECONCILE_INTERVAL:
+            return
+        self._last_reconcile_at = now_ts
+        try:
+            self._backfill_closed_fills()
+        except Exception as e:
+            log.debug(f"Reconcile failed: {e}")
+
+    def _backfill_closed_fills(self) -> None:
+        fills = list_open_fills()
+        if not fills:
+            return
+
+        still_open = {
+            int(p.ticket)
+            for p in (mt5.positions_get() or ())
+            if getattr(p, "ticket", None)
+        }
+
+        pending = []
+        for fill in fills:
+            try:
+                ticket = int(fill["ticket"])
+            except (TypeError, ValueError):
+                continue
+            if ticket not in still_open:
+                pending.append(fill)
+        if not pending:
+            return
+
+        deals = mt5.history_deals_get(
+            datetime.now() - timedelta(days=14),
+            datetime.now() + timedelta(hours=1),
+        ) or ()
+
+        entry_out    = getattr(mt5, "DEAL_ENTRY_OUT", 1)
+        entry_out_by = getattr(mt5, "DEAL_ENTRY_OUT_BY", 3)
+        reason_sl    = getattr(mt5, "DEAL_REASON_SL", 4)
+        reason_tp    = getattr(mt5, "DEAL_REASON_TP", 5)
+        reason_so    = getattr(mt5, "DEAL_REASON_SO", 6)
+
+        out_by_ticket: dict[int, list] = {}
+        for deal in deals:
+            entry = int(getattr(deal, "entry", -1))
+            if entry not in (entry_out, entry_out_by):
+                continue
+            pos_id   = int(getattr(deal, "position_id", 0) or 0)
+            order_id = int(getattr(deal, "order", 0) or 0)
+            if pos_id:
+                out_by_ticket.setdefault(pos_id, []).append(deal)
+            if order_id and order_id != pos_id:
+                out_by_ticket.setdefault(order_id, []).append(deal)
+
+        for fill in pending:
+            ticket = int(fill["ticket"])
+            outs = out_by_ticket.get(ticket) or []
+            if not outs:
+                continue
+            outs = sorted(outs, key=lambda d: int(getattr(d, "time", 0) or 0))
+            last = outs[-1]
+            exit_price = getattr(last, "price", 0) or 0
+            reason_code = int(getattr(last, "reason", 0) or 0)
+            if reason_code == reason_sl:
+                exit_reason = "SL"
+            elif reason_code == reason_tp:
+                exit_reason = "TP"
+            elif reason_code == reason_so:
+                exit_reason = "STOP_OUT"
+            else:
+                exit_reason = _exit_reason_from_levels(exit_price, fill["sl"], fill["tp"])
+            pnl = sum(
+                float(getattr(d, "profit", 0) or 0)
+                + float(getattr(d, "swap", 0) or 0)
+                + float(getattr(d, "commission", 0) or 0)
+                for d in outs
+            )
+            if update_trade_outcome(
+                ticket,
+                exit_price=f"{float(exit_price):.5f}",
+                exit_reason=exit_reason,
+                pnl=f"{pnl:.2f}",
+            ):
+                log.info(
+                    f"[reconcile] ticket {ticket} closed — "
+                    f"{exit_reason} @ {float(exit_price):.5f}  pnl={pnl:.2f}"
+                )
+
     def _count_positions(self, symbol: str | None = None) -> int:
         """Open positions AND pending orders — pending ones still consume risk."""
         try:
@@ -971,6 +1101,7 @@ class BraveBot:
                     continue
 
                 self._update_fast_status()
+                self._reconcile_closed_trades()
 
                 if now_ts - last_signal_check >= self.CHECK_INTERVAL:
                     try:

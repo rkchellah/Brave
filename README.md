@@ -16,15 +16,15 @@ The agent calls five nodes in sequence:
 
 **ANALYSE** — Finnhub fetches recent headlines for the pair. DeepSeek reads them and returns CONFIRM, OPPOSE, or UNCERTAIN with a one-sentence reason.
 
-**RISK_CHECK** — Pure Python: daily loss limit (5%), max open positions per symbol, lot size sanity. Any failure aborts the trade.
+**RISK_CHECK** — Pure Python: daily loss limit (5%), max open positions per symbol, lot size sanity, and any Firebase HITL row still PENDING/EXECUTING on that symbol. Any failure aborts the trade.
 
 **EXECUTE** — CONFIRM + risk pass → MT5 market order. Firebase alert written with ticket number and price.
 
-**HITL** — UNCERTAIN + risk pass → signal pushed to Firebase `pending_signals`. Trader confirms or rejects from the mobile app within 3 minutes. OPPOSE aborts silently.
+**HITL** — genuine UNCERTAIN (news fetched, DeepSeek read it, verdict is mixed) + risk pass → signal pushed to Firebase `pending_signals`. Trader confirms or rejects from the mobile app within 3 minutes. OPPOSE aborts silently. A Finnhub timeout, DeepSeek API error, or 0 usable headlines is `analysis_unavailable`, not a judgment: AUTO skips the signal (`outcome=ANALYSIS_UNAVAILABLE`); MANUAL still asks, but the card is tagged `hitl_kind: data_unavailable` so it is not mistaken for mixed news. A second DETECT on the same symbol is skipped while a PENDING or EXECUTING row already exists, so one idea cannot occupy two confirm slots.
 
 Each node is a plain function. Routing is conditional edges on `BraveState`. The bot loop calls `run_brave_graph(symbol, config, firebase)` once per symbol per cycle.
 
-Every DETECT writes one row to `logs/flow_attempts.csv` (H1 trend, AOI distance, sweep+reclaim, signal/no-signal) — including near-misses. News-filter pauses write the same schema with `reason=news_filter_pause` before DETECT runs. Full setups that leave DETECT also append to `logs/trade_log.csv`.
+Every DETECT writes one row to `logs/flow_attempts.csv` (H1 trend, AOI distance, sweep+reclaim, signal/no-signal) — including near-misses. News-filter pauses and max-trades skips write the same schema (`reason=news_filter_pause` / `reason=max_trades_reached`) before DETECT runs. Full setups that leave DETECT also append to `logs/trade_log.csv`. When an MT5 position later hits SL/TP, the fast-status loop back-fills `exit_price`, `exit_reason`, and `pnl` on that row.
 
 ## Running locally
 
@@ -120,13 +120,16 @@ Note that `mt5_config` stores the password in plaintext in Realtime Database. An
 
 ## How HITL works
 
-When ANALYSE returns UNCERTAIN (or execution mode is MANUAL), EXECUTE is skipped. The HITL node pushes the signal to `pending_signals` with:
+When ANALYSE returns a genuine UNCERTAIN (or execution mode is MANUAL), EXECUTE is skipped. The HITL node pushes the signal to `pending_signals` with:
 
 ```
-status:     PENDING
-expires_at: now + SIGNAL_EXPIRY_SECONDS   # default 180
+status:      PENDING
+expires_at:  now + SIGNAL_EXPIRY_SECONDS   # default 180
 hitl_reason: DeepSeek's one-sentence explanation
+hitl_kind:   genuine_uncertainty | data_unavailable | manual_mode
 ```
+
+`data_unavailable` is only used in MANUAL (AUTO skips those setups before HITL). The app Signals card shows **Mixed news** vs **Data unavailable** so the two cases cannot be confused.
 
 The app shows Confirm / Reject. The bot polls that record. CONFIRMED proceeds to order placement. REJECTED or EXPIRED is logged and discarded. The 3-minute window exists because a Flow setup at M15 is stale once price has moved off the AOI.
 

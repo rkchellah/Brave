@@ -9,6 +9,7 @@ over three symbols burns ~4300 Finnhub calls a day and hits the rate limit.
 """
 
 import logging
+import re
 import threading
 import time
 from typing import Any
@@ -22,6 +23,7 @@ log = logging.getLogger(__name__)
 CACHE_TTL_SECONDS = 300     # Re-fetch the feed at most every 5 minutes
 MAX_ATTEMPTS      = 2       # One retry on transient API failure
 RETRY_DELAY       = 2.0     # Seconds between attempts
+_TOKEN_IN_URL     = re.compile(r"token=[^&\s]+", re.IGNORECASE)
 
 SYMBOL_KEYWORDS: dict[str, list[str]] = {
     "EURUSD": ["euro", "EUR", "ECB", "eurozone", "dollar", "Fed", "FOMC"],
@@ -58,22 +60,26 @@ def _get_client() -> finnhub.Client | None:
         return None
 
 
-def _fetch_feed() -> list[dict[str, Any]]:
-    """
-    Return the general news feed, cached for CACHE_TTL_SECONDS.
+def _safe_err(exc: BaseException) -> str:
+    """Strip API keys out of SDK exception URLs before they hit the log."""
+    return _TOKEN_IN_URL.sub("token=***", str(exc))
 
-    On failure the previous feed is kept and returned — stale headlines beat
-    no headlines, and the caller still gets a usable prompt.
+
+def _fetch_feed() -> tuple[list[dict[str, Any]], bool]:
+    """
+    Return (feed, ok). ok is False when the request failed and the cache is empty.
+
+    On failure a previous feed is kept — stale headlines beat no headlines.
     """
     global _cached_feed, _cached_at
 
     with _cache_lock:
         if _cached_feed and (time.monotonic() - _cached_at) < CACHE_TTL_SECONDS:
-            return _cached_feed
+            return _cached_feed, True
 
         client = _get_client()
         if client is None:
-            return _cached_feed
+            return _cached_feed, bool(_cached_feed)
 
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
@@ -89,30 +95,48 @@ def _fetch_feed() -> list[dict[str, Any]]:
                     _cached_feed = feed
                     _cached_at   = time.monotonic()
                     log.info(f"[news_fetcher] Fetched {len(feed)} articles from Finnhub")
-                else:
-                    log.warning("[news_fetcher] Finnhub returned no usable articles")
-                return _cached_feed
+                    return _cached_feed, True
+
+                log.warning("[news_fetcher] Finnhub returned no usable articles")
+                if _cached_feed:
+                    return _cached_feed, True
+                return [], False
 
             except Exception as e:
-                log.warning(f"[news_fetcher] Fetch attempt {attempt}/{MAX_ATTEMPTS} failed: {e}")
+                log.warning(
+                    f"[news_fetcher] Fetch attempt {attempt}/{MAX_ATTEMPTS} failed: {_safe_err(e)}"
+                )
                 if attempt < MAX_ATTEMPTS:
                     time.sleep(RETRY_DELAY)
 
         log.error("[news_fetcher] All fetch attempts failed — using cached feed if available")
-        return _cached_feed
+        return _cached_feed, bool(_cached_feed)
 
 
-def fetch_news_for_symbol(symbol: str, max_articles: int = 10) -> list[dict[str, Any]]:
-    """Fetch Finnhub headlines and filter them down to ones relevant to `symbol`."""
+def fetch_news_for_symbol(
+    symbol: str, max_articles: int = 10,
+) -> tuple[list[dict[str, Any]], bool]:
+    """
+    Fetch Finnhub headlines filtered to `symbol`.
+
+    Returns (articles, data_ok). data_ok is False on fetch failure or when
+    nothing relevant survived the filter — ANALYSE must not treat that as
+    a genuine UNCERTAIN judgment.
+    """
     if not symbol:
-        return []
+        return [], False
 
     symbol   = symbol.upper()
     keywords = [k.lower() for k in SYMBOL_KEYWORDS.get(symbol, DEFAULT_KEYWORDS)]
     max_articles = max(1, min(int(max_articles or 10), 25))
 
+    feed, feed_ok = _fetch_feed()
+    if not feed_ok:
+        log.info(f"[news_fetcher] {symbol}: 0 relevant articles (feed unavailable)")
+        return [], False
+
     filtered: list[dict[str, Any]] = []
-    for article in _fetch_feed():
+    for article in feed:
         headline = str(article.get("headline") or "")
         summary  = str(article.get("summary") or "")
         text     = f"{headline} {summary}".lower()
@@ -128,7 +152,7 @@ def fetch_news_for_symbol(symbol: str, max_articles: int = 10) -> list[dict[str,
                 break
 
     log.info(f"[news_fetcher] {symbol}: {len(filtered)} relevant articles")
-    return filtered
+    return filtered, bool(filtered)
 
 
 def format_headlines_for_llm(symbol: str, articles: list[dict[str, Any]]) -> str:

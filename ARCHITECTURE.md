@@ -76,6 +76,8 @@ Brave/
 ```
         MT5 (H1 + M15 rates)
                 ↓
+        bot.py — skip if news window or positions+orders >= max_trades
+                ↓
         flow.py — analyze()
                 ↓  signal dict or None
         graph.py — DETECT
@@ -96,6 +98,8 @@ Brave/
         ↓          bot.py — _process_pending_signals()
         ↓                 └→ trade_executor.place_order()
    alerts/ + logs/trades/*.csv
+                 trade_log.csv exit columns patched from history_deals_get
+                 when the position later hits SL/TP
 ```
 
 ---
@@ -108,7 +112,7 @@ returns a state that routes safely to `END` — one bad symbol never stops the l
 | Node | Responsibility | Failure behaviour |
 |---|---|---|
 | `detect` | Run Flow, validate the signal shape | No signal or malformed → abort |
-| `analyse` | Finnhub headlines → DeepSeek verdict | API down → `UNCERTAIN`, never CONFIRM/OPPOSE |
+| `analyse` | Finnhub headlines → DeepSeek verdict | Tool/fetch failure → `analysis_unavailable` (AUTO skip; MANUAL HITL tagged). Genuine mixed news → `UNCERTAIN` HITL |
 | `risk_check` | Positions+orders, daily loss, signal sanity | Any failure → abort |
 | `execute` | `trade_executor.place_order()` | Structured failure → `EXECUTION_FAILED` alert |
 | `hitl` | Push to `pending_signals` for confirmation | Firebase down → signal dropped, logged |
@@ -116,19 +120,22 @@ returns a state that routes safely to `END` — one bad symbol never stops the l
 Routing:
 
 ```
-detect     → no signal              → END
-analyse    → OPPOSE                 → END
-analyse    → CONFIRM / UNCERTAIN    → risk_check
-risk_check → fail                   → END
-risk_check → MANUAL mode            → hitl
-risk_check → pass + UNCERTAIN       → hitl
-risk_check → pass + CONFIRM         → execute
+detect     → no signal                         → END
+analyse    → OPPOSE                            → END
+analyse    → data unavailable + AUTO           → END (abort_reason=analysis_unavailable)
+analyse    → CONFIRM / genuine UNCERTAIN       → risk_check
+analyse    → data unavailable + MANUAL         → risk_check (then HITL, tagged)
+risk_check → fail                              → END
+risk_check → MANUAL mode                       → hitl
+risk_check → pass + genuine UNCERTAIN          → hitl
+risk_check → pass + CONFIRM                    → execute
 ```
 
 The compiled graph is cached at module level — compiling per symbol per cycle is waste.
 
-A DeepSeek outage degrades to `UNCERTAIN` rather than `CONFIRM` or `OPPOSE`, so an API
-failure can neither green-light nor silently block trades on its own: it routes to a human.
+A Finnhub or DeepSeek outage is `analysis_unavailable`, not a sentiment judgment. AUTO
+skips the setup. MANUAL still asks, with `hitl_kind: data_unavailable` on the pending
+row so the app can show it as a data failure rather than mixed news.
 
 ---
 
@@ -279,8 +286,10 @@ users/{USER_ID}/
   market_status/       per-symbol OPEN|CLOSED|RESTRICTED|UNAVAILABLE
   alerts/{push_id}/    TRADE_EXECUTED | EXECUTION_FAILED — ticket, filled_price, lot, error
   pending_signals/     HITL queue — status PENDING|CONFIRMED|EXECUTING|EXECUTED|
-                       REJECTED|EXPIRED|FAILED, expires_at
-  news_analysis/{sym}/ verdict, reason, headlines[], article_count, news_source, model
+                       REJECTED|EXPIRED|FAILED, expires_at, hitl_kind
+                       (genuine_uncertainty | data_unavailable | manual_mode)
+  news_analysis/{sym}/ verdict, reason, headlines[], article_count, news_source, model,
+                       analysis_unavailable, hitl_kind
   mt5_config/          login, password, server, updated_at, updated_by
 ```
 

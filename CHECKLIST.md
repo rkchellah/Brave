@@ -66,7 +66,9 @@
 - [x] Transient retcodes retried once at a refreshed price
 - [x] Every execution appended to `logs/trades/trades_YYYY-MM-DD.csv`
 - [x] Every DETECT attempt appended to `logs/flow_attempts.csv` (near-misses included)
+- [x] Max-trades skip before DETECT (`reason=max_trades_reached`) — same early-exit as news_filter_pause
 - [x] Full setups that leave DETECT appended to `logs/trade_log.csv`
+- [x] Closed MT5 tickets back-fill `exit_price` / `exit_reason` / `pnl` on that CSV row
 - [ ] Live execution verified end-to-end on the demo account
 
 ---
@@ -74,6 +76,8 @@
 ## Phase 5 — Human-in-the-Loop ✅ COMPLETE
 
 - [x] UNCERTAIN sentiment routes to `pending_signals/`
+- [x] Fetch/tool failure is `analysis_unavailable`, not HITL — AUTO skips; MANUAL HITL tagged `hitl_kind`
+- [x] Duplicate PENDING/EXECUTING HITL on the same symbol is skipped (`duplicate_pending_signal`)
 - [x] MANUAL execution mode routes every signal to `pending_signals/`
 - [x] Signals expire after `SIGNAL_EXPIRY_SECONDS` (default 180)
 - [x] App shows Confirm / Reject with a live countdown
@@ -139,6 +143,9 @@
 | Aug 10 2026 | Finnhub key leaked to GitHub in `sentiment_log.2026-04-06` (logged inside a Finnhub error URL) | Resolved | Key rotated Aug 10 2026, old one revoked and verified live; history not rewritten — rotation kills the leaked value |
 | Aug 10 2026 | MT5 password leaked to GitHub in `backtest/backtest_flow.py:88` @ `e40ec49` | Open — accepted | Demo account, risk accepted; password no longer in any source file |
 | Aug 10 2026 | `src/seed_mt5_config.py` writes the broker password to Firebase in plaintext | Open — accepted | Now warns and requires confirmation before writing; see the `mt5_config` row above |
+| Aug 13 2026 | AUTO HITL asked for confirmation on Finnhub timeouts — indistinguishable from genuine mixed sentiment | Resolved | ANALYSE splits `data_unavailable` from `genuine_uncertainty`; AUTO skips (`analysis_unavailable`); MANUAL HITL tagged `hitl_kind` |
+| Aug 13 2026 | USDJPY at 3-position cap still ran DETECT→ANALYSE (DeepSeek) five times before RISK_CHECK blocked | Resolved | `_check_signals` skips `run_brave_graph` when `_count_positions >= max_trades`; CSV `reason=max_trades_reached` |
+| Aug 13 2026 | `trade_log.csv` never got SL/TP/PnL — `update_trade_outcome()` existed but nothing called it | Resolved | Fast-status loop reconciles `history_deals_get` against open tickets every 15s |
 
 ---
 
