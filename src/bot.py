@@ -38,23 +38,23 @@ from config import (  # noqa: E402
     EXECUTION_MODE,
     FIREBASE_CREDENTIALS,
     FIREBASE_DATABASE_URL,
+    LOG_DIR,
     LOT_SIZE,
     MAX_TRADES,
     MT5_LOGIN,
     MT5_PASSWORD,
     MT5_SERVER,
     SIGNAL_EXPIRY_SECONDS,
-    STOP_LOSS_PIPS,
     SYMBOLS,
-    TAKE_PROFIT_PIPS,
-    TIMEFRAME,
     USER_ID,
     ConfigError,
     validate_config,
 )
 import credentials as mt5_credentials  # noqa: E402
+import news_filter  # noqa: E402
 from graph import run_brave_graph  # noqa: E402
 from news_filter import NewsFilter  # noqa: E402
+from risk import daily_loss_limit_hit, session_metrics  # noqa: E402
 from trade_executor import place_order  # noqa: E402
 from trade_logger import (  # noqa: E402
     attach_ticket,
@@ -67,9 +67,11 @@ from trade_logger import (  # noqa: E402
 BOT_VERSION = "Brave v3.0"
 
 # ── Logging — rotating daily, keep 7 days ─────────────────────────────
-os.makedirs("logs", exist_ok=True)
+# LOG_DIR is project-root anchored: launching from src/ used to write a second,
+# unreconciled brave_bot.log into src/logs.
+os.makedirs(LOG_DIR, exist_ok=True)
 _log_handler = logging.handlers.TimedRotatingFileHandler(
-    filename="logs/brave_bot.log",
+    filename=os.path.join(LOG_DIR, "brave_bot.log"),
     when="midnight",
     backupCount=7,
     encoding="utf-8",
@@ -114,11 +116,10 @@ class BraveBot:
         self.market_status_cache   = {}
         self.active_pairs          = []
         self.execution_mode        = EXECUTION_MODE
-        self._session_start_equity = None
-        self._last_session_date    = None
         self._mt5_credentials      = None   # (login, password, server, source), resolved at startup
         self._last_health          = None   # previous health dict — for AutoTrading edge alerts
         self._last_reconcile_at    = 0.0
+        self._stored_status        = None   # bot_status as it was before this process wrote to it
 
         self.news_filter = NewsFilter()
 
@@ -128,6 +129,15 @@ class BraveBot:
 
         for warning in validate_config():
             log.warning(f"Config: {warning}")
+
+        # An unmapped symbol fails open — it trades straight through high-impact
+        # news windows. Surface it at startup rather than per-cycle in the noise.
+        unmapped = news_filter.unmapped_symbols(SYMBOLS)
+        if unmapped:
+            log.warning(
+                f"News filter has no currency mapping for {', '.join(unmapped)} — "
+                "these symbols will NOT be paused around high-impact events"
+            )
 
         # Firebase comes up first: broker credentials live in mt5_config and
         # must be readable before the MT5 login attempt.
@@ -298,13 +308,17 @@ class BraveBot:
 
             self._seed_defaults()
 
+            # Snapshot the run state the app left behind BEFORE anything writes
+            # to bot_status — run() resumes from this. Reading it later would
+            # only ever see this process's own initialization write.
+            self._stored_status = self.status_ref.get()
+
             # Listeners run on background threads; both handlers swallow their
             # own exceptions so an SSE hiccup can't kill the stream.
             self.command_ref.listen(self._handle_command)
             self.brave_config_ref.listen(self._handle_config_change)
 
             self._update_status({
-                "is_running":      False,
                 "bot_version":     BOT_VERSION,
                 "active_strategy": "flow",
             })
@@ -340,14 +354,7 @@ class BraveBot:
                 self.brave_config_ref.update(backfill)
 
         if not self.config_ref.get():
-            self.config_ref.set({
-                "symbols":          SYMBOLS,
-                "timeframe":        TIMEFRAME,
-                "lot_size":         LOT_SIZE,
-                "max_trades":       MAX_TRADES,
-                "stop_loss_pips":   STOP_LOSS_PIPS,
-                "take_profit_pips": TAKE_PROFIT_PIPS,
-            })
+            self.config_ref.set(self._default_config())
 
     # ═══════════════════════════════════════════════════════════════
     # FIREBASE LISTENERS
@@ -732,17 +739,12 @@ class BraveBot:
             log.warning("No account info — skipping loss-limit check")
             return False
 
-        session_pnl, _ = self._get_session_metrics(account)
-        if not self._session_start_equity:
+        hit, reason = daily_loss_limit_hit(account, DAILY_LOSS_LIMIT_PCT)
+        if not hit:
             return False
 
-        loss_limit = -(self._session_start_equity * DAILY_LOSS_LIMIT_PCT)
-        if session_pnl > loss_limit:
-            return False
-
-        log.warning(
-            f"Daily loss limit hit (${session_pnl:.2f} <= ${loss_limit:.2f}) — bot paused for today"
-        )
+        session_pnl, _ = session_metrics(account)
+        log.warning(f"{reason} — bot paused for today")
         self.is_running = False
         self._update_status({
             "is_running":     False,
@@ -829,8 +831,13 @@ class BraveBot:
             if result["ok"]:
                 self._set_signal_status(key, "EXECUTED", ticket=result["ticket"],
                                         filled_price=result["price"], lot=result["lot"])
-                # Graph already wrote a HITL row with blank ticket — attach the fill
-                attach_ticket(symbol, result["ticket"], outcome="EXECUTED")
+                # Graph already wrote a HITL row with blank ticket — attach the
+                # fill. SL/TP identify which queued signal this was, so a second
+                # pending signal on the same symbol cannot steal the ticket.
+                attach_ticket(
+                    symbol, result["ticket"], outcome="EXECUTED",
+                    sl=signal.get("suggested_sl"), tp=signal.get("suggested_tp"),
+                )
                 self._push_alert({
                     **signal,
                     "alert_type":   "TRADE_EXECUTED",
@@ -882,21 +889,6 @@ class BraveBot:
     # UTILITIES
     # ═══════════════════════════════════════════════════════════════
 
-    def _get_session_metrics(self, account) -> tuple[float, float]:
-        """Session P&L against the equity the day opened at."""
-        if not account:
-            return 0.0, 0.0
-
-        today = datetime.now().date().isoformat()
-        if self._last_session_date != today or self._session_start_equity is None:
-            self._session_start_equity = account.equity
-            self._last_session_date    = today
-            log.info(f"Daily session started — Equity: ${self._session_start_equity:.2f}")
-
-        session_pnl = account.equity - self._session_start_equity
-        session_pct = (session_pnl / self._session_start_equity * 100) if self._session_start_equity else 0.0
-        return session_pnl, session_pct
-
     def _update_fast_status(self) -> None:
         if not self.firebase_enabled:
             return
@@ -904,7 +896,7 @@ class BraveBot:
             account = mt5.account_info()
             if not account:
                 return
-            session_pnl, session_pct = self._get_session_metrics(account)
+            session_pnl, session_pct = session_metrics(account)
             self.status_ref.update({
                 "balance":         account.balance,
                 "equity":          account.equity,
@@ -1027,16 +1019,18 @@ class BraveBot:
             log.debug(f"Could not read brave_config: {e}")
             return {}
 
+    @staticmethod
+    def _default_config() -> dict:
+        """Trading config defaults — the shape seeded into and merged over Firebase."""
+        return {
+            "symbols":    SYMBOLS,
+            "lot_size":   LOT_SIZE,
+            "max_trades": MAX_TRADES,
+        }
+
     def _get_config(self) -> dict:
         """Trading config from Firebase, falling back to config.py defaults."""
-        defaults = {
-            "symbols":          SYMBOLS,
-            "timeframe":        TIMEFRAME,
-            "lot_size":         LOT_SIZE,
-            "max_trades":       MAX_TRADES,
-            "stop_loss_pips":   STOP_LOSS_PIPS,
-            "take_profit_pips": TAKE_PROFIT_PIPS,
-        }
+        defaults = self._default_config()
         if not self.firebase_enabled:
             return defaults
         try:
@@ -1071,6 +1065,33 @@ class BraveBot:
     # MAIN LOOP
     # ═══════════════════════════════════════════════════════════════
 
+    def _resume_run_state(self) -> bool:
+        """
+        The run/pause state the app last set, or True in LOCAL MODE.
+
+        Without Firebase there is no app to take the decision, so the bot runs —
+        otherwise a headless run would idle forever with nothing able to start it.
+        A DAILY_LOSS_LIMIT pause is not resumed: it is scoped to the day it was
+        set, and the limiter re-applies it on the next cycle if it still holds.
+        """
+        if not self.firebase_enabled:
+            return True
+
+        status = self._stored_status
+        if not isinstance(status, dict) or "is_running" not in status:
+            return True  # Never started from the app — nothing to resume
+
+        if str(status.get("paused_reason") or "") == "DAILY_LOSS_LIMIT":
+            log.info("Previous pause was DAILY_LOSS_LIMIT — not resumed; limiter re-checks each cycle")
+            return True
+
+        resumed = bool(status.get("is_running"))
+        log.info(
+            f"Resuming app run state: {'RUNNING' if resumed else 'PAUSED'}"
+            + ("" if resumed else " — send Start from the app to trade")
+        )
+        return resumed
+
     def run(self) -> None:
         log.info("=" * 60)
         log.info(BOT_VERSION)
@@ -1080,8 +1101,11 @@ class BraveBot:
         log.info("News filter:     ENABLED (±30 min around high-impact events)")
         log.info("=" * 60)
 
-        self.is_running = True
-        self._update_status({"is_running": True, "bot_version": BOT_VERSION})
+        # Resume the state the app left the bot in. Starting unconditionally
+        # meant a Stop from the app was undone by the next process restart —
+        # the operator sees "stopped" and gets a bot that trades anyway.
+        self.is_running = self._resume_run_state()
+        self._update_status({"is_running": self.is_running, "bot_version": BOT_VERSION})
         self._health_check()
 
         self.active_pairs      = self._select_pairs(max_pairs=3)

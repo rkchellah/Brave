@@ -1,7 +1,21 @@
+"""
+flow.py — the Flow strategy: the only signal source Brave runs.
+
+analyze() is the whole public surface. It returns a signal dict or None, and
+records why on self.last_attempt so graph.py can log near-misses to
+flow_attempts.csv without the strategy knowing anything about CSVs.
+
+Pure analysis: it reads candles and returns a verdict. It places no orders,
+writes no files and touches no Firebase.
+"""
+
+import logging
+from datetime import datetime, time, timezone
+
 import MetaTrader5 as mt5
 import numpy as np
-import logging
-from datetime import datetime, time
+
+log = logging.getLogger(__name__)
 
 
 class Flow:
@@ -69,10 +83,10 @@ class Flow:
         # Set by every analyze() call for instrumentation (graph → trade_logger).
         # Does not affect signal decisions.
         self.last_attempt: dict | None = None
-        logging.info("✅ Flow — Multi-Session Scalper loaded")
-        logging.info("   Sessions: Pre-London(06-08) London(08-11) Bridge(11-13) NY(13-16) UTC")
-        logging.info("   Entry: M15 sweep+reclaim | H1 trend filter | ATR SL")
-        logging.info(f"   RR: {self.MIN_RR} minimum | AOI: {self.MIN_AOI_TOUCHES}+ touches")
+        log.info("✅ Flow — Multi-Session Scalper loaded")
+        log.info("   Sessions: Pre-London(06-08) London(08-11) Bridge(11-13) NY(13-16) UTC")
+        log.info("   Entry: M15 sweep+reclaim | H1 trend filter | ATR SL")
+        log.info(f"   RR: {self.MIN_RR} minimum | AOI: {self.MIN_AOI_TOUCHES}+ touches")
 
     def _record_attempt(
         self,
@@ -111,11 +125,11 @@ class Flow:
                       }
         """
         self.last_attempt = None
-        logging.info(f"   [{symbol}] Flow: Starting multi-session scalp analysis...")
+        log.info(f"   [{symbol}] Flow: Starting multi-session scalp analysis...")
 
         # ── 1. Session filter (live only) ────────────────────────
         if provided_rates is None and not self._is_active_session():
-            logging.info(f"   [{symbol}] Flow: Outside session window — skipping")
+            log.info(f"   [{symbol}] Flow: Outside session window — skipping")
             self._record_attempt(symbol, outcome="no-signal", reason="outside_session")
             return None
 
@@ -124,7 +138,7 @@ class Flow:
         m15_candles = self._get_candles(symbol, mt5.TIMEFRAME_M15, self.M15_LOOKBACK, provided_rates)
 
         if not h1_candles or not m15_candles:
-            logging.error(f"   [{symbol}] Flow: Insufficient H1/M15 data")
+            log.error(f"   [{symbol}] Flow: Insufficient H1/M15 data")
             self._record_attempt(symbol, outcome="no-signal", reason="insufficient_data")
             return None
 
@@ -133,10 +147,10 @@ class Flow:
 
         # ── 4. H1 trend filter ───────────────────────────────────
         h1_trend = self._determine_trend(h1_candles)
-        logging.info(f"   [{symbol}] Flow: H1 trend = {h1_trend}")
+        log.info(f"   [{symbol}] Flow: H1 trend = {h1_trend}")
 
         if h1_trend == "RANGING":
-            logging.info(f"   [{symbol}] Flow: H1 ranging — no scalp setup")
+            log.info(f"   [{symbol}] Flow: H1 ranging — no scalp setup")
             self._record_attempt(
                 symbol, outcome="no-signal", reason="h1_ranging", h1_trend=h1_trend,
             )
@@ -145,13 +159,13 @@ class Flow:
         # ── 5. Find AOI on H1 ────────────────────────────────────
         aoi = self._find_aoi(h1_candles, h1_trend, point)
         if aoi is None:
-            logging.info(f"   [{symbol}] Flow: No AOI found on H1")
+            log.info(f"   [{symbol}] Flow: No AOI found on H1")
             self._record_attempt(
                 symbol, outcome="no-signal", reason="no_aoi", h1_trend=h1_trend,
             )
             return None
 
-        logging.info(
+        log.info(
             f"   [{symbol}] Flow: AOI at {aoi['level']:.5f} "
             f"({aoi['type']}, {aoi['touches']} touches)"
         )
@@ -161,7 +175,7 @@ class Flow:
         distance_pips = abs(current_price - aoi["level"]) / point
 
         if distance_pips > self.PRICE_AT_AOI_PIPS:
-            logging.info(
+            log.info(
                 f"   [{symbol}] Flow: Price {distance_pips:.1f} pips from AOI "
                 f"(max {self.PRICE_AT_AOI_PIPS}) — too far"
             )
@@ -174,12 +188,12 @@ class Flow:
             )
             return None
 
-        logging.info(f"   [{symbol}] Flow: Price {distance_pips:.1f} pips from AOI ✅")
+        log.info(f"   [{symbol}] Flow: Price {distance_pips:.1f} pips from AOI ✅")
 
         # ── 7. M15 sweep + reclaim ───────────────────────────────
         sweep = self._detect_sweep(m15_candles[-10:], aoi, h1_trend, point)
         if sweep is None:
-            logging.info(f"   [{symbol}] Flow: No M15 sweep+reclaim pattern")
+            log.info(f"   [{symbol}] Flow: No M15 sweep+reclaim pattern")
             self._record_attempt(
                 symbol,
                 outcome="no-signal",
@@ -190,7 +204,7 @@ class Flow:
             )
             return None
 
-        logging.info(
+        log.info(
             f"   [{symbol}] Flow: ✅ Sweep+reclaim confirmed "
             f"({sweep['direction']}, {sweep['sweep_size_pips']:.1f} pips)"
         )
@@ -198,7 +212,7 @@ class Flow:
         # ── 8. ATR-based SL ──────────────────────────────────────
         atr_pips = self._calculate_atr(m15_candles, point)
         if atr_pips is None or atr_pips < 1.0:
-            logging.info(f"   [{symbol}] Flow: ATR too low — dead market")
+            log.info(f"   [{symbol}] Flow: ATR too low — dead market")
             self._record_attempt(
                 symbol,
                 outcome="no-signal",
@@ -278,7 +292,7 @@ class Flow:
         # but the multiply/divide round-trip is not exact in binary floating point
         # and lands a hair under. Tolerate that; anything genuinely below still fails.
         if rr_ratio < self.MIN_RR - self.RR_EPSILON:
-            logging.info(f"   [{symbol}] Flow: RR {rr_ratio:.2f} < {self.MIN_RR} — skipping")
+            log.info(f"   [{symbol}] Flow: RR {rr_ratio:.2f} < {self.MIN_RR} — skipping")
             return None, "rr_below_min"
 
         lot_size      = self.config.get("lot_size", 0.01)
@@ -286,7 +300,7 @@ class Flow:
         expected_profit = reward * lot_size * contract_size
         expected_loss   = risk   * lot_size * contract_size
 
-        logging.info(
+        log.info(
             f"   [{symbol}] Flow: 🎯 {direction} scalp | "
             f"Entry={entry:.5f} SL={sl:.5f} TP={tp:.5f} "
             f"RR={rr_ratio:.2f} ATR={atr_pips:.1f}pips"
@@ -471,11 +485,11 @@ class Flow:
     # ═══════════════════════════════════════════════════════════════
 
     def _is_active_session(self) -> bool:
-        now = datetime.utcnow().time()
+        now = datetime.now(timezone.utc).time()
         return any(start <= now < end for start, end in self.SESSIONS)
 
     def _current_session(self) -> str:
-        now = datetime.utcnow().time()
+        now = datetime.now(timezone.utc).time()
         labels = ["PRE_LONDON", "LONDON", "BRIDGE", "NEW_YORK"]
         for (start, end), label in zip(self.SESSIONS, labels):
             if start <= now < end:

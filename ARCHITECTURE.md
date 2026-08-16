@@ -40,12 +40,15 @@ Brave/
 │   ├── trade_executor.py    # Signal validation, risk sizing, MT5 order placement
 │   ├── news_fetcher.py      # Finnhub headlines + DeepSeek prompt formatting
 │   ├── news_filter.py       # ForexFactory high-impact event blackout windows
+│   ├── trade_logger.py      # Every CSV Brave writes — signals, attempts, executions
+│   ├── risk.py              # Session equity tracking + the daily loss limit definition
 │   └── seed_mt5_config.py   # One-time broker credential seed (deletable)
 ├── scripts/
 │   └── clear_pending_signals.py   # One-time HITL queue cleanup
 ├── backtest/                # Backtesting scripts and CSV results
 ├── brave-app/               # React Native mobile app
 ├── logs/                    # Runtime logs and trade CSVs (auto-generated)
+│                           # Anchored to PROJECT_ROOT via config.LOG_DIR, never to CWD
 ├── config.py                # Config and credentials (never committed)
 ├── requirements.txt         # Pinned Python dependencies
 └── serviceAccountKey.json   # Firebase key (never committed)
@@ -160,7 +163,10 @@ Guarantees:
   get one retry at a refreshed price
 - **Never raises** — callers receive `{ok, ticket, price, lot, retcode, error}`
 
-Every execution appends to `logs/trades/trades_YYYY-MM-DD.csv`.
+Every execution appends to `logs/trades/trades_YYYY-MM-DD.csv` via
+`trade_logger.log_execution()`. All three CSVs — `trade_log.csv`, `flow_attempts.csv`
+and the per-day execution files — are written by `trade_logger` alone, so path
+anchoring and failure handling cannot drift between them.
 
 ---
 
@@ -321,7 +327,8 @@ MT5_LOGIN, MT5_PASSWORD, MT5_SERVER          # broker — all three set = no sta
                                              # otherwise credentials.py prompts on the terminal;
                                              # Firebase mt5_config / config.py only when headless
 FIREBASE_DATABASE_URL, FIREBASE_CREDENTIALS, USER_ID
-SYMBOLS, TIMEFRAME, LOT_SIZE, MAX_TRADES
+SYMBOLS, LOT_SIZE, MAX_TRADES               # no fixed-pip SL/TP: Flow sizes SL from ATR,
+                                             # TP from MIN_RR, and picks its own H1/M15
 RISK_PER_TRADE_PCT, DAILY_LOSS_LIMIT_PCT
 DEEPSEEK_API_KEY, FINNHUB_API_KEY
 EXECUTION_MODE, SIGNAL_EXPIRY_SECONDS

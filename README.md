@@ -26,6 +26,10 @@ Each node is a plain function. Routing is conditional edges on `BraveState`. The
 
 Every DETECT writes one row to `logs/flow_attempts.csv` (H1 trend, AOI distance, sweep+reclaim, signal/no-signal) — including near-misses. News-filter pauses and max-trades skips write the same schema (`reason=news_filter_pause` / `reason=max_trades_reached`) before DETECT runs. Full setups that leave DETECT also append to `logs/trade_log.csv`. When an MT5 position later hits SL/TP, the fast-status loop back-fills `exit_price`, `exit_reason`, and `pnl` on that row.
 
+All three CSVs are written by `src/trade_logger.py` and only by it, at paths anchored to the project root through `config.LOG_DIR` — running the bot from `src/` used to create a second, unreconciled log tree. The daily loss limit lives in `src/risk.py`, which both the bot loop and the graph's RISK_CHECK call, so the two cannot drift apart.
+
+The news filter maps each symbol to the currencies whose events should pause it. **A symbol with no mapping is not filtered** — `unmapped_symbols()` is checked at startup and names any gap in the log, because a missing row used to mean silent permission to trade straight through high-impact events.
+
 ## Running locally
 
 ```bash

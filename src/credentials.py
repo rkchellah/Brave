@@ -125,24 +125,3 @@ def _prompt_password(max_attempts: int) -> str:
             return password
         print(" ! Password cannot be empty.")
     raise RuntimeError("No MT5 password entered")
-
-
-def resolve(
-    fallback: MT5Credentials,
-    default_login: int = 0,
-    default_server: str = "",
-) -> MT5Credentials:
-    """
-    Environment first, then an interactive prompt, then the caller's fallback.
-
-    fallback is used only when there is no terminal to prompt on — an
-    unattended run with no environment variables set.
-    """
-    from_env = env_credentials()
-    if from_env is not None:
-        return from_env
-
-    if can_prompt():
-        return prompt_credentials(default_login, default_server)
-
-    return fallback

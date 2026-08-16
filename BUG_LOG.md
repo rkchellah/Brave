@@ -122,13 +122,70 @@
 
 ---
 
+## [2026-08-13] Flow has no memory of recently-traded AOI zones
+**Symptom:** All three USDJPY trades executed today (tickets 2358145924, 2358145766, 2358174962) were re-entries into the same resistance zone (AOI 159.333) within a 6-minute window, not three independent setups. `MAX_TRADES` (3, per symbol) was fully consumed by one repeating thesis while GBPUSD and EURUSD sat unused in `aoi_too_far` the entire session — so the day's full risk budget went to one directional idea rather than diversified exposure.
+**Root cause:** Flow's DETECT has no state between cycles — each 60s pass re-evaluates the same AOI fresh, with no check for "a signal was already taken on this zone recently." A sweep+reclaim oscillating a few pips inside the entry window across consecutive candles reads as N distinct "new" signals rather than one persisting setup.
+**Fix:** Deferred — user is intentionally not changing strategy behavior mid-observation-week. To be addressed after the week closes. Candidate approaches to evaluate then: (a) per-AOI cooldown after a fill, (b) require price to exit and re-approach the zone before re-qualifying, (c) leave as-is if MAX_TRADES's hard cap is judged sufficient risk control on its own.
+**Pattern tag:** `no-reentry-memory` (new tag — distinct from `duplicate-order-risk`, which was about the same signal reaching multiple execution paths; this is about the *strategy* re-generating genuinely new-looking signals from the same underlying setup, which is a design gap, not an infrastructure bug)
+
+---
+
+## [2026-08-16] News filter was inactive on USDCAD and EURCHF
+**Symptom:** No runtime symptom — the filter logged normally and reported events loaded. Found by reading `news_filter.py` against `config.SYMBOLS`.
+**Blast radius:** `SYMBOL_CURRENCIES` never had entries for USDCAD or EURCHF, but both have shipped in the default `SYMBOLS` list. `is_safe_to_trade()` returns `True` for any symbol not in the map, so **every USDCAD and EURCHF signal since those pairs were added traded through high-impact news windows with no pause at all** — including the 11 USDCAD attempts on 2026-08-12. The other four symbols were filtered correctly, which is why nothing looked wrong.
+**Root cause:** A lookup table that must be exhaustive was treated as best-effort. The unknown-symbol branch was written as "don't block things we don't understand", which is the right instinct for an optional enrichment and exactly wrong for a safety gate — it converts a missing table row into silent permission.
+**Fix:** Added USDCAD and EURCHF (plus EURGBP/EURJPY/GBPJPY/NZDUSD) to `SYMBOL_CURRENCIES`; the fall-through now logs a WARNING naming the symbol instead of returning quietly; new `unmapped_symbols()` is called from `BraveBot.__init__` so any symbol without a mapping is named at startup — `src/news_filter.py`, `src/bot.py.__init__`.
+**Pattern tag:** `silent-fail-open`
+
+---
+
+## [2026-08-16] Manual-confirm tickets attached to the wrong signal rows
+**Symptom:** Found while rebuilding `trade_log.csv` (see below). The three USDJPY fills on 2026-08-13 were cross-checked against `logs/trades/trades_2026-08-13.csv`, which records SL/TP at fill time. Tickets 2358145766 and 2358145924 were attached to each other's rows: the row with SL 159.434 carried the ticket belonging to the row with SL 159.430, and vice versa. Exit price and P&L followed the ticket, so both rows reported the other trade's result.
+**Root cause:** `attach_ticket()` identified its target as "the newest un-ticketed HITL row for this symbol". Identity was inferred from recency instead of from anything actually identifying. With several signals queued on one symbol — routine for Flow, and guaranteed by the `no-reentry-memory` gap logged above — the user confirms an older signal while a newer one sits in the queue, and the newer row claims the ticket.
+**Fix:** `attach_ticket()` now takes the confirmed signal's `sl`/`tp` and matches the row on levels, within a fraction of a pip; the newest-row rule survives only as a fallback when levels are absent or match nothing, since attaching to a wrong trade is worse than not attaching. `bot.py` passes them from the confirmed signal — `src/trade_logger.py`, `attach_ticket()`/`_patch_latest_hitl()`/`_match_by_levels()`; `src/bot.py._process_pending_signals()`.
+**Pattern tag:** `identity-by-recency` (new tag — a record was located by "most recent match" where nothing guaranteed the most recent one was the right one)
+
+---
+
+## [2026-08-16] `trade_log.csv` destroyed during a test, rebuilt from logs
+**Symptom:** `logs/trade_log.csv` went from 16,103 bytes (66 signal rows) to 190 bytes (1 row) during a round-trip test of `trade_logger`. Not a bot bug — an agent-caused incident during the cleanup work — but the mechanism was a real defect in the module.
+**Root cause:** `_rewrite(rows, path=LOG_PATH, ...)` carried the module-level `LOG_PATH` as a **default argument**, which Python binds once at function-definition time. A test that reassigned `trade_logger.LOG_PATH` to a scratch directory redirected every other function but not this one, so `update_trade_outcome()` rewrote the real log. A default that silently ignores the module state it was copied from is indistinguishable from one that tracks it, right up until it destroys something.
+**Fix:** `_rewrite(rows, path, columns)` now requires both explicitly — no defaults to go stale — with a comment stating why. Recovery: `trade_log.csv` holds derived data, so all 66 rows were rebuilt from `brave_bot.log` rotations (DETECT/ANALYSE/RISK_CHECK/HITL/EXECUTE lines) cross-checked against the intact `flow_attempts.csv` (67 `outcome=signal` rows, one of which never produced a trade_log row because the process was killed mid-ANALYSE). Rebuilt file is 16,082 bytes against the original 16,103. The damaged file is kept at `logs/trade_log.damaged-20260816.csv` and the rebuild at `logs/trade_log.reconstructed.csv`. The ticket mis-pairing above was found by this cross-check and is corrected in the rebuild.
+**Pattern tag:** `default-bound-at-definition`
+
+---
+
+## [2026-08-16] Two disagreeing definitions of the daily loss limit
+**Symptom:** No runtime symptom. `bot.py` measured session P&L against the equity the day opened at; `graph.py` measured `(balance - equity) / balance`, which is unrealised P&L on whatever is currently open. The second is not a daily loss at all — it reads as a large "daily loss" whenever a position is simply open and underwater, and reads zero after a realised loss closes.
+**Root cause:** The same rule was implemented twice, in two files, at two different times. Neither was wrong where it was written; they drifted because nothing owned the definition.
+**Fix:** New `src/risk.py` owns session equity tracking and `daily_loss_limit_hit()`; `bot.py` and `graph.py` both call it — `src/risk.py`, `src/bot.py._daily_loss_limit_hit()`, `src/graph.py.node_risk_check()`.
+**Pattern tag:** `duplicated-rule-drift` (new tag)
+
+---
+
+## [2026-08-16] Log paths resolved against the working directory
+**Symptom:** `src/logs/brave_bot.log` existed alongside `logs/brave_bot.log` — a second, smaller log nobody was reading.
+**Root cause:** `bot.py` used `os.makedirs("logs")` and `trade_logger` used `Path("logs")`, both relative. Launching from `src/` instead of the project root silently created a parallel log tree. For `brave_bot.log` that is cosmetic; for `trade_log.csv` it is not — the reconciler would have backfilled exits into one copy while the graph appended signals to the other.
+**Fix:** `config.LOG_DIR` is anchored to `PROJECT_ROOT` and is now the single source for every log path — `config.py`, `src/bot.py`, `src/trade_logger.py`. `trade_executor`'s separate per-day CSV writer moved into `trade_logger.log_execution()` so all three CSVs share one anchoring.
+**Pattern tag:** `cwd-relative-path` (new tag)
+
+---
+
+## [2026-08-16] Bot auto-started on launch, ignoring a Stop set in the app
+**Symptom:** Stopping the bot from the app and restarting the process resumed trading with no Start command. The 2026-08-10 `no-process-check` entry records `run()` being fixed to start paused; the v3.0 rewrite (`f8d46ba`, 2026-07-23) reintroduced an unconditional `self.is_running = True`, so that fix has not been in effect for any v3.0 session.
+**Root cause:** A fix landed on the pre-v3 bot and the rewrite reimplemented `run()` from scratch without it. Nothing tested for it, so the regression was invisible — the earlier entry made it look permanently solved.
+**Fix:** `run()` resumes the stored `bot_status.is_running`. The snapshot is taken in `_init_firebase()` before this process writes anything to `bot_status`, since reading it later would only see our own initialization write. LOCAL MODE still runs (no app exists to decide), and a `DAILY_LOSS_LIMIT` pause is not resumed because it is scoped to the day it was set — `src/bot.py._resume_run_state()`, `_init_firebase()`.
+**Pattern tag:** `fixed-then-regressed` (new tag — a documented fix silently undone by a later rewrite; the bug log itself asserted it was closed)
+
+---
+
 ## Patterns Observed
 
 | Pattern tag | Count |
 | --- | --- |
 | `stale-data-trusted-as-current` | 2 |
 | `no-process-check` | 1 |
-| `silent-fail-open` | 2 |
+| `silent-fail-open` | 3 |
 | `never-actually-worked` | 1 |
 | `secret-in-source` | 1 |
 | `secret-in-committed-artifact` | 1 |
@@ -138,10 +195,29 @@
 | `conflated-failure-modes` | 1 |
 | `late-cheap-gate` | 1 |
 | `unwired-hook` | 1 |
+| `no-reentry-memory` | 1 |
+| `identity-by-recency` | 1 |
+| `default-bound-at-definition` | 1 |
+| `duplicated-rule-drift` | 1 |
+| `cwd-relative-path` | 1 |
+| `fixed-then-regressed` | 1 |
 
 A tag reaching 2+ means the same class of mistake is recurring — fix the class, not just the instance.
 
-`silent-fail-open` is now at 2 — the class, not the instance, is the problem: Brave has
+`silent-fail-open` is now at **3** and is the most persistent class in this log. All three
+instances share one shape: a safety gate whose *unknown* case was written to permit rather
+than to refuse. Empty calendar → allowed. Unparseable dates → allowed. Symbol missing from
+the currency map → allowed. The class fix is a rule, not another patch: **in any gate that
+can stop a trade, the absence of information is a refusal, and every fall-through logs at
+WARNING naming what was missing.** A gate that cannot say why it allowed something is not a
+gate. Two of the three were invisible for months precisely because the permit path was silent.
+
+`fixed-then-regressed` deserves attention out of proportion to its count of 1: it means an
+entry in this log asserted a bug was closed while the bug was live. The log is only as good
+as that assertion. Any fix recorded here that is not covered by a test is one rewrite away
+from silently reopening — and Brave currently has no test suite at all.
+
+`silent-fail-open` was previously at 2 — the class, not the instance, is the problem: Brave has
 safety/review mechanisms (news filter, HITL queue) that stop or hold a trade without any
 channel that reaches the human away from the app. The class fix is one out-of-band alert
 path every such mechanism calls, not a second one-off patch.

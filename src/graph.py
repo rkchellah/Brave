@@ -36,6 +36,7 @@ from langgraph.graph import END, StateGraph
 from config import DAILY_LOSS_LIMIT_PCT, MAX_TRADES, SIGNAL_EXPIRY_SECONDS
 from flow import Flow
 from news_fetcher import fetch_news_for_symbol, format_headlines_for_llm
+from risk import daily_loss_limit_hit
 from trade_executor import ExecutionError, place_order, validate_signal
 from trade_logger import log_detect_attempt, log_signal
 
@@ -317,11 +318,13 @@ def node_risk_check(state: BraveState) -> BraveState:
         if not account.trade_allowed:
             return _risk_fail(state, "Trading not allowed on this account")
 
+        # Same definition bot.py's limiter uses — session drawdown against the
+        # equity the day opened at. Comparing equity to *balance* here instead
+        # measured unrealised P&L on open positions, so the two gates disagreed.
         daily_limit = float(config.get("daily_loss_limit_pct", DAILY_LOSS_LIMIT_PCT))
-        if account.balance > 0:
-            loss_pct = (account.balance - account.equity) / account.balance
-            if loss_pct >= daily_limit:
-                return _risk_fail(state, f"Daily loss limit hit ({loss_pct:.1%} >= {daily_limit:.1%})")
+        limit_hit, limit_reason = daily_loss_limit_hit(account, daily_limit)
+        if limit_hit:
+            return _risk_fail(state, limit_reason)
 
         # Signal sanity — same rules the executor enforces, checked early
         validate_signal(symbol, signal)

@@ -146,6 +146,14 @@
 | Aug 13 2026 | AUTO HITL asked for confirmation on Finnhub timeouts — indistinguishable from genuine mixed sentiment | Resolved | ANALYSE splits `data_unavailable` from `genuine_uncertainty`; AUTO skips (`analysis_unavailable`); MANUAL HITL tagged `hitl_kind` |
 | Aug 13 2026 | USDJPY at 3-position cap still ran DETECT→ANALYSE (DeepSeek) five times before RISK_CHECK blocked | Resolved | `_check_signals` skips `run_brave_graph` when `_count_positions >= max_trades`; CSV `reason=max_trades_reached` |
 | Aug 13 2026 | `trade_log.csv` never got SL/TP/PnL — `update_trade_outcome()` existed but nothing called it | Resolved | Fast-status loop reconciles `history_deals_get` against open tickets every 15s |
+| Aug 16 2026 | News filter had no `SYMBOL_CURRENCIES` entry for USDCAD or EURCHF — both ship in `SYMBOLS`, and unmapped symbols fail open, so neither pair was ever paused around high-impact news | Resolved | Mappings added; fall-through now logs WARNING; `unmapped_symbols()` checked at startup |
+| Aug 16 2026 | `attach_ticket()` claimed the newest un-ticketed HITL row, so with several signals queued on one symbol the ticket, exit price and P&L landed on the wrong rows (confirmed against `trades_2026-08-13.csv`) | Resolved | Matches on the confirmed signal's SL/TP; newest-row rule kept only as fallback |
+| Aug 16 2026 | `bot.py` and `graph.py` implemented the daily loss limit differently — graph compared equity to *balance*, i.e. unrealised P&L, not the day's loss | Resolved | New `src/risk.py` owns the definition; both callers use it |
+| Aug 16 2026 | Log paths were relative to the working directory — launching from `src/` created a second, unreconciled `src/logs/` tree | Resolved | `config.LOG_DIR` anchored to `PROJECT_ROOT`; all CSV writes routed through `trade_logger` |
+| Aug 16 2026 | `run()` set `is_running = True` unconditionally, so a Stop set in the app was undone by the next process restart — regression of the Aug 10 fix, reintroduced by the v3.0 rewrite | Resolved | `_resume_run_state()` restores the stored `bot_status.is_running`, snapshotted before this process writes to it |
+| Aug 16 2026 | `flow.py` used `datetime.utcnow()` for session gating — deprecated on Python 3.12+, and this project runs 3.14 | Resolved | `datetime.now(timezone.utc)` |
+| Aug 16 2026 | `logs/trade_log.csv` destroyed during a `trade_logger` test — `_rewrite`'s default `path=LOG_PATH` bound at definition time and ignored a redirected module path | Resolved | Rebuilt all 66 rows from `brave_bot.log` + `flow_attempts.csv` (16,082 vs 16,103 bytes); `_rewrite` now requires path and columns explicitly |
+| Aug 16 2026 | No test suite — every fix in `BUG_LOG.md` is one rewrite away from silently reopening, as the `is_running` regression demonstrates | Open | Highest-value next task; start with the gates that can stop a trade |
 
 ---
 

@@ -13,17 +13,17 @@ Guarantees:
       the broker's stops level — no more silently dropped stops on XAUUSD
     * An order is never placed without both SL and TP
     * Unsupported filling modes are retried instead of failing the trade
+
+Fills are recorded through trade_logger.log_execution — every CSV Brave writes
+goes through that one module so path anchoring and failure handling are shared.
 """
 
-import csv
 import logging
-import os
-from datetime import datetime, timezone
-from pathlib import Path
 
 import MetaTrader5 as mt5
 
 from config import LOT_SIZE, RISK_PER_TRADE_PCT
+from trade_logger import log_execution
 
 log = logging.getLogger(__name__)
 
@@ -223,7 +223,7 @@ def place_order(symbol: str, signal: dict, config: dict, comment: str = "Brave F
         fill_price = getattr(result, "price", price) or price
         log.info(f"[{symbol}] Order placed — ticket {ticket} @ {fill_price}")
 
-        log_trade_csv(symbol, signal, lot, ticket, fill_price, sl, tp, account)
+        log_execution(symbol, signal, lot, ticket, fill_price, sl, tp, account)
 
         return {"ok": True, "ticket": ticket, "price": fill_price, "lot": lot,
                 "sl": sl, "tp": tp, "retcode": result.retcode, "error": None}
@@ -274,41 +274,3 @@ def _failure(symbol: str, retcode, error: str) -> dict:
     log.error(f"[{symbol}] Order failed — {error}")
     return {"ok": False, "ticket": 0, "price": 0.0, "lot": 0.0,
             "sl": 0.0, "tp": 0.0, "retcode": retcode, "error": error}
-
-
-# ── Trade log ─────────────────────────────────────────────────────────
-CSV_HEADERS = [
-    "timestamp", "symbol", "strategy", "direction", "entry_price",
-    "sl", "tp", "lot", "risk_reward", "ticket", "account_balance", "account_equity",
-]
-
-
-def log_trade_csv(symbol: str, signal: dict, lot: float, ticket: int,
-                  price: float, sl: float, tp: float, account) -> None:
-    """Append the executed trade to logs/trades/trades_YYYY-MM-DD.csv."""
-    try:
-        os.makedirs("logs/trades", exist_ok=True)
-        csv_path = Path(f"logs/trades/trades_{datetime.now().strftime('%Y-%m-%d')}.csv")
-        is_new   = not csv_path.exists()
-
-        with csv_path.open("a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
-            if is_new:
-                writer.writeheader()
-            writer.writerow({
-                "timestamp":       datetime.now(timezone.utc).isoformat(),
-                "symbol":          symbol,
-                "strategy":        signal.get("strategy_name", "Flow"),
-                "direction":       signal["direction"],
-                "entry_price":     price,
-                "sl":              sl,
-                "tp":              tp,
-                "lot":             lot,
-                "risk_reward":     signal.get("risk_reward_ratio"),
-                "ticket":          ticket,
-                "account_balance": getattr(account, "balance", None),
-                "account_equity":  getattr(account, "equity", None),
-            })
-    except OSError as e:
-        # A failed CSV write must never lose an executed trade
-        log.error(f"[{symbol}] Could not write trade log: {e}")

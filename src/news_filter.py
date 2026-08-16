@@ -21,19 +21,41 @@ PAUSE_AFTER_MIN     = 30          # Pause this many minutes AFTER event
 CACHE_TTL_SECONDS   = 300         # Re-fetch calendar every 5 minutes
 REQUEST_TIMEOUT     = 10          # Seconds before giving up on the request
 
-# Currencies that affect each symbol
+# Currencies that affect each symbol.
+#
+# A symbol missing from this map is NOT blocked by is_safe_to_trade — it falls
+# through as "unknown, don't block". That is a fail-open path, so every symbol
+# the bot can trade must appear here. Call unmapped_symbols() at startup to
+# assert that; USDCAD and EURCHF shipped in SYMBOLS without entries here and
+# traded through high-impact news windows unfiltered as a result.
 SYMBOL_CURRENCIES: dict[str, list[str]] = {
     "EURUSD": ["EUR", "USD"],
     "GBPUSD": ["GBP", "USD"],
     "XAUUSD": ["USD"],          # Gold is driven almost entirely by USD events
     "USDJPY": ["USD", "JPY"],
     "USDCHF": ["USD", "CHF"],
+    "USDCAD": ["USD", "CAD"],
+    "EURCHF": ["EUR", "CHF"],
+    "EURGBP": ["EUR", "GBP"],
+    "EURJPY": ["EUR", "JPY"],
+    "GBPJPY": ["GBP", "JPY"],
     "AUDUSD": ["AUD", "USD"],
+    "NZDUSD": ["NZD", "USD"],
     "US30":   ["USD"],
     "NAS100": ["USD"],
     "UK100":  ["GBP"],
     "GER40":  ["EUR"],
 }
+
+
+def unmapped_symbols(symbols: list[str]) -> list[str]:
+    """
+    Symbols with no SYMBOL_CURRENCIES entry — the news filter cannot gate these.
+
+    Callers log this at startup: an unmapped symbol trades through news windows
+    silently, which is exactly the failure this returns early warning of.
+    """
+    return [s for s in symbols if s.upper() not in SYMBOL_CURRENCIES]
 
 
 def _parse_event_time(dt_str: str) -> datetime:
@@ -103,9 +125,15 @@ class NewsFilter:
             )
             return True
 
-        currencies = SYMBOL_CURRENCIES.get(symbol, [])
+        currencies = SYMBOL_CURRENCIES.get(symbol.upper(), [])
         if not currencies:
-            return True  # Unknown symbol — don't block
+            # Fail-open by design — but loudly, so an unmapped symbol shows up
+            # in the log instead of quietly trading through every news window.
+            log.warning(
+                f"NewsFilter: [{symbol}] not in SYMBOL_CURRENCIES — "
+                "news filtering is INACTIVE for this symbol"
+            )
+            return True
 
         now      = datetime.now(timezone.utc)
         pause_before = timedelta(minutes=PAUSE_BEFORE_MIN)
@@ -136,33 +164,6 @@ class NewsFilter:
                 return False
 
         return True
-
-    def next_event_for(self, symbol: str) -> dict | None:
-        """
-        Returns the next upcoming high-impact event for this symbol,
-        or None if there are none in the current week's calendar.
-        Useful for logging / status updates.
-        """
-        self._refresh_if_stale()
-
-        currencies = SYMBOL_CURRENCIES.get(symbol, [])
-        now        = datetime.now(timezone.utc)
-        upcoming   = []
-
-        for event in self._events:
-            if event.get("impact") != "High":
-                continue
-            if event.get("currency", "") not in currencies:
-                continue
-            event_time = event.get("_parsed_time")
-            if event_time and event_time > now:
-                upcoming.append(event)
-
-        if not upcoming:
-            return None
-
-        upcoming.sort(key=lambda e: e["_parsed_time"])
-        return upcoming[0]
 
     # ═══════════════════════════════════════════════════════════════
     # INTERNAL
