@@ -320,7 +320,7 @@ class BraveBot:
 
             self._update_status({
                 "bot_version":     BOT_VERSION,
-                "active_strategy": "flow",
+                "active_strategy": "frost",
             })
 
             log.info("Firebase connected — command listener active")
@@ -336,9 +336,9 @@ class BraveBot:
         brave_config = self.brave_config_ref.get()
         if not brave_config:
             self.brave_config_ref.set({
-                "active_strategy": "flow",
+                "active_strategy": "frost",
                 "execution_mode":  EXECUTION_MODE,
-                "strategy_config": {"flow": {"enabled": True, "max_trades": MAX_TRADES}},
+                "strategy_config": {"frost": {"enabled": True, "max_trades": MAX_TRADES}},
                 "last_switched":   None,
             })
             log.info("brave_config initialized in Firebase")
@@ -347,14 +347,63 @@ class BraveBot:
             if "execution_mode" not in brave_config:
                 backfill["execution_mode"] = EXECUTION_MODE
             if "strategy_config" not in brave_config:
-                backfill["strategy_config"] = {"flow": {"enabled": True, "max_trades": MAX_TRADES}}
+                backfill["strategy_config"] = {"frost": {"enabled": True, "max_trades": MAX_TRADES}}
             if "active_strategy" not in brave_config:
-                backfill["active_strategy"] = "flow"
+                backfill["active_strategy"] = "frost"
             if backfill:
                 self.brave_config_ref.update(backfill)
 
+            self._migrate_flow_to_frost(brave_config)
+
         if not self.config_ref.get():
             self.config_ref.set(self._default_config())
+
+    def _migrate_flow_to_frost(self, brave_config: dict) -> None:
+        """
+        One-time move of strategy_config from flow to frost.
+
+        An existing install has `strategy_config/flow` and no frost entry, so
+        `_flow_enabled()` would read a missing key, fall through to its
+        permissive default, and the app's Settings toggle would write to a
+        strategy nothing runs. Carries flow's max_trades across so the user's
+        configured cap survives the swap, then drops the flow key entirely.
+
+        Idempotent: once frost exists this returns without touching Firebase,
+        so a restart cannot re-run it or resurrect a flow key the user removed.
+        """
+        strategy_config = brave_config.get("strategy_config")
+        if not isinstance(strategy_config, dict):
+            return
+        if "flow" not in strategy_config or "frost" in strategy_config:
+            return
+
+        flow_cfg = strategy_config.get("flow")
+        max_trades = MAX_TRADES
+        if isinstance(flow_cfg, dict):
+            try:
+                max_trades = int(flow_cfg.get("max_trades", MAX_TRADES) or MAX_TRADES)
+            except (TypeError, ValueError):
+                log.warning(
+                    f"Migration: unreadable max_trades on flow "
+                    f"({flow_cfg.get('max_trades')!r}) — using {MAX_TRADES}"
+                )
+
+        # Rebuild rather than delete-then-add: any other strategy key present is
+        # preserved, and the whole swap lands in a single write so a failure
+        # mid-migration cannot leave neither strategy configured.
+        migrated = {k: v for k, v in strategy_config.items() if k != "flow"}
+        migrated["frost"] = {"enabled": True, "max_trades": max_trades}
+
+        try:
+            self.brave_config_ref.update({
+                "strategy_config": migrated,
+                "active_strategy": "frost",
+            })
+        except Exception as e:
+            log.error(f"Migration: could not rewrite strategy_config ({e}) — leaving flow in place")
+            return
+
+        log.info(f"Migrated strategy_config: flow -> frost (max_trades={max_trades})")
 
     # ═══════════════════════════════════════════════════════════════
     # FIREBASE LISTENERS
@@ -395,27 +444,27 @@ class BraveBot:
                 self.execution_mode = mode
                 log.info(f"Execution mode changed → {mode}")
 
-            if self._flow_enabled(config):
-                self._update_status({"active_strategy": "flow"})
+            if self._strategy_enabled(config):
+                self._update_status({"active_strategy": "frost"})
             else:
                 self._update_status({"active_strategy": "none"})
-                log.info("Flow disabled from app — no new signals will be taken")
+                log.info("Frost disabled from app — no new signals will be taken")
 
         except Exception as e:
             log.error(f"Error handling config change: {e}")
 
     @staticmethod
-    def _flow_enabled(brave_config: dict | None) -> bool:
-        """Flow is on unless the app explicitly disabled it."""
+    def _strategy_enabled(brave_config: dict | None) -> bool:
+        """Frost is on unless the app explicitly disabled it."""
         if not isinstance(brave_config, dict):
             return True
         strategy_config = brave_config.get("strategy_config")
         if not isinstance(strategy_config, dict):
             return True
-        flow_cfg = strategy_config.get("flow")
-        if not isinstance(flow_cfg, dict):
+        frost_cfg = strategy_config.get("frost")
+        if not isinstance(frost_cfg, dict):
             return True
-        return flow_cfg.get("enabled", True) is not False
+        return frost_cfg.get("enabled", True) is not False
 
     # ═══════════════════════════════════════════════════════════════
     # MARKET STATUS
@@ -535,7 +584,7 @@ class BraveBot:
             "terminal_autotrading_enabled":    False,
             "symbols_available":               {},
             "market_status":                   {},
-            "active_strategy":                 "flow",
+            "active_strategy":                 "frost",
             "execution_mode":                  self._get_execution_mode(),
             "bot_version":                     BOT_VERSION,
             "status":                          "UNKNOWN",
@@ -624,8 +673,8 @@ class BraveBot:
     def _check_signals(self, config: dict) -> None:
         log.info(f"Checking signals... ({datetime.now().strftime('%H:%M:%S')})")
 
-        if not self._flow_enabled(self._get_brave_config()):
-            log.info("Flow disabled in app settings — skipping")
+        if not self._strategy_enabled(self._get_brave_config()):
+            log.info("Frost disabled in app settings — skipping")
             self._update_status({"is_running": True, "trading_active": False})
             return
 
@@ -652,7 +701,7 @@ class BraveBot:
             return
 
         mode = self._get_execution_mode()
-        log.info(f"Analyzing: {', '.join(pairs_to_analyze)} | Strategy: Flow | Mode: {mode}")
+        log.info(f"Analyzing: {', '.join(pairs_to_analyze)} | Strategy: Frost | Mode: {mode}")
 
         firebase_refs = {
             "alerts_ref":          getattr(self, "alerts_ref", None),
@@ -664,7 +713,7 @@ class BraveBot:
             try:
                 if not self.news_filter.is_safe_to_trade(symbol):
                     log.info(f"[{symbol}] Skipped — high-impact news window")
-                    # Same schema as Flow outside_session rows — gate before DETECT
+                    # Same schema as Frost outside_session rows — gate before DETECT
                     log_detect_attempt({
                         "symbol":            symbol,
                         "h1_trend":          "",
@@ -708,7 +757,7 @@ class BraveBot:
             except Exception as e:
                 log.error(f"[{symbol}] Error during analysis: {e}")
                 traceback.print_exc()
-                # Guarantees a CSV row even if the graph never reached Flow.analyze()
+                # Guarantees a CSV row even if the graph never reached Frost.analyze()
                 log_detect_attempt({
                     "symbol":            symbol,
                     "h1_trend":          "",
@@ -722,7 +771,7 @@ class BraveBot:
         self._update_status({
             "is_running":       True,
             "trading_active":   True,
-            "active_strategy":  "flow",
+            "active_strategy":  "frost",
             "execution_mode":   mode,
             "open_markets":     open_markets,
             "markets_analyzed": pairs_to_analyze,
@@ -844,7 +893,7 @@ class BraveBot:
                     "ticket":       result["ticket"],
                     "filled_price": result["price"],
                     "lot":          result["lot"],
-                    "strategy":     signal.get("strategy_name", "Flow"),
+                    "strategy":     signal.get("strategy_name", "Frost"),
                 })
             else:
                 self._set_signal_status(key, "FAILED", error=result["error"])

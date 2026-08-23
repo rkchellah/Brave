@@ -4,7 +4,7 @@ graph.py — Brave v3.0 LangGraph agent.
 Pipeline:
     DETECT → ANALYSE → RISK_CHECK → EXECUTE or HITL
 
-DETECT:     Flow strategy scans the symbol for a signal
+DETECT:     Frost strategy scans the symbol for a signal
 ANALYSE:    DeepSeek reads Finnhub headlines, returns CONFIRM/OPPOSE/UNCERTAIN
 RISK_CHECK: Pure Python — open positions, daily loss limit, signal sanity
 EXECUTE:    Order placed through trade_executor, Firebase alert written
@@ -34,7 +34,7 @@ import MetaTrader5 as mt5
 from langgraph.graph import END, StateGraph
 
 from config import DAILY_LOSS_LIMIT_PCT, MAX_TRADES, SIGNAL_EXPIRY_SECONDS
-from flow import Flow
+from frost import Frost
 from news_fetcher import fetch_news_for_symbol, format_headlines_for_llm
 from risk import daily_loss_limit_hit
 from trade_executor import ExecutionError, place_order, validate_signal
@@ -78,11 +78,11 @@ def _abort(state: BraveState, reason: str) -> BraveState:
 # ── Node 1: DETECT ────────────────────────────────────────────────────
 def node_detect(state: BraveState) -> BraveState:
     symbol = state["symbol"]
-    log.info(f"[DETECT] Running Flow on {symbol}...")
+    log.info(f"[DETECT] Running Frost on {symbol}...")
 
     try:
-        flow = Flow(state["config"])
-        signal = flow.analyze(symbol)
+        strategy = Frost(state["config"])
+        signal = strategy.analyze(symbol)
     except Exception as e:
         log.error(f"[DETECT] {symbol}: Strategy error — {e}")
         traceback.print_exc()
@@ -95,15 +95,15 @@ def node_detect(state: BraveState) -> BraveState:
 
     if signal is None:
         log.info(f"[DETECT] {symbol}: No signal")
-        _log_detect_attempt(symbol, flow.last_attempt)
-        return _abort(state, "No signal from Flow")
+        _log_detect_attempt(symbol, strategy.last_attempt)
+        return _abort(state, "No signal from Frost")
 
     # Reject a malformed signal here rather than at the broker
     try:
         signal = validate_signal(symbol, signal)
     except ExecutionError as e:
         log.warning(f"[DETECT] {symbol}: Rejected malformed signal — {e}")
-        attempt = dict(flow.last_attempt or {})
+        attempt = dict(strategy.last_attempt or {})
         attempt.update({
             "symbol":        symbol,
             "outcome":       "no-signal",
@@ -113,7 +113,7 @@ def node_detect(state: BraveState) -> BraveState:
         log_detect_attempt(attempt)
         return _abort(state, str(e))
 
-    _log_detect_attempt(symbol, flow.last_attempt)
+    _log_detect_attempt(symbol, strategy.last_attempt)
     log.info(f"[DETECT] {symbol}: {signal['direction']} signal — Entry {signal['entry_price']}")
     return {**state, "signal": signal, "abort": False, "abort_reason": ""}
 
@@ -375,7 +375,7 @@ def node_execute(state: BraveState) -> BraveState:
     log.info(f"[EXECUTE] Placing {signal['direction']} on {symbol}...")
 
     result = place_order(symbol, signal, state["config"],
-                         comment=f"Brave Flow {signal['direction']}")
+                         comment=f"Brave Frost {signal['direction']}")
 
     alerts_ref = state.get("firebase", {}).get("alerts_ref")
     if alerts_ref is not None:
@@ -388,7 +388,7 @@ def node_execute(state: BraveState) -> BraveState:
                 "ticket":           result["ticket"],
                 "filled_price":     result["price"],
                 "lot":              result["lot"],
-                "strategy":         signal.get("strategy_name", "Flow"),
+                "strategy":         signal.get("strategy_name", "Frost"),
                 "error":            result["error"],
                 "sent_at":          datetime.now(timezone.utc).isoformat(),
             })

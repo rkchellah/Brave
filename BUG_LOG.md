@@ -179,6 +179,14 @@
 
 ---
 
+## [2026-08-14] Strategy swapped from Flow to Frost
+**Reason:** User wants Fury-style mechanical profile (mean reversion, Asian session, tight RR) — Flow is trend-continuation and structurally can't match that. Frost was already built and validated for exactly this profile (64.5% WR, 1.64 PF, 527 trades backtest) but was deleted during the QuantifyX cleanup (commit aaaf262) and recovered from git history (ad4e703) for this swap.
+**Effect:** Flow's Aug 11-14 observation dataset archived as `flow_attempts_archive_2026-08-11_to_14.csv`. Frost begins fresh. Trading window changes from Pre-London/London/Bridge/NY to Asian-only (00:00-06:00 UTC). `flow.py` remains on disk, unused, not deleted, not referenced in the app.
+**Instrumentation added:** `_record_attempt` parity method added to `frost.py` (didn't exist pre-deletion). `datetime.utcnow()` deprecation fixed. Logging switched to module logger.
+**Pattern tag:** `strategy-swap` (not a bug — recorded here because the trading profile, session window and dataset boundary all change on this date, and future log analysis needs the seam marked)
+
+---
+
 ## Patterns Observed
 
 | Pattern tag | Count |
@@ -201,6 +209,7 @@
 | `duplicated-rule-drift` | 1 |
 | `cwd-relative-path` | 1 |
 | `fixed-then-regressed` | 1 |
+| `strategy-swap` | 1 |
 
 A tag reaching 2+ means the same class of mistake is recurring — fix the class, not just the instance.
 

@@ -5,7 +5,7 @@
 
 ## What Brave Is
 
-Brave is an autonomous forex trading agent. It runs the **Flow** strategy on MetaTrader 5,
+Brave is an autonomous forex trading agent. It runs the **Frost** strategy on MetaTrader 5,
 checks every setup against recent news with DeepSeek, and either places the order or asks
 the trader to confirm it from a mobile app.
 
@@ -36,10 +36,11 @@ Brave/
 ├── src/
 │   ├── bot.py               # Main loop, MT5 + Firebase init, credential resolution
 │   ├── graph.py             # LangGraph pipeline (DETECT→ANALYSE→RISK_CHECK→EXECUTE/HITL)
-│   ├── flow.py              # Flow strategy — H1 trend + M15 sweep+reclaim
 │   ├── trade_executor.py    # Signal validation, risk sizing, MT5 order placement
 │   ├── news_fetcher.py      # Finnhub headlines + DeepSeek prompt formatting
 │   ├── news_filter.py       # ForexFactory high-impact event blackout windows
+│   ├── frost.py             # ACTIVE strategy — Asian-session mean reversion
+│   ├── flow.py              # Retired strategy — trend continuation, kept for reference
 │   ├── trade_logger.py      # Every CSV Brave writes — signals, attempts, executions
 │   ├── risk.py              # Session equity tracking + the daily loss limit definition
 │   └── seed_mt5_config.py   # One-time broker credential seed (deletable)
@@ -81,7 +82,7 @@ Brave/
                 ↓
         bot.py — skip if news window or positions+orders >= max_trades
                 ↓
-        flow.py — analyze()
+        frost.py — analyze()
                 ↓  signal dict or None
         graph.py — DETECT
                 ↓
@@ -114,7 +115,7 @@ returns a state that routes safely to `END` — one bad symbol never stops the l
 
 | Node | Responsibility | Failure behaviour |
 |---|---|---|
-| `detect` | Run Flow, validate the signal shape | No signal or malformed → abort |
+| `detect` | Run Frost, validate the signal shape | No signal or malformed → abort |
 | `analyse` | Finnhub headlines → DeepSeek verdict | Tool/fetch failure → `analysis_unavailable` (AUTO skip; MANUAL HITL tagged). Genuine mixed news → `UNCERTAIN` HITL |
 | `risk_check` | Positions+orders, daily loss, signal sanity | Any failure → abort |
 | `execute` | `trade_executor.place_order()` | Structured failure → `EXECUTION_FAILED` alert |
@@ -227,7 +228,7 @@ class MyStrategy:
 {
     "symbol":            str,    # e.g. "EURUSD"
     "direction":         str,    # "BUY" | "SELL"
-    "strategy_name":     str,    # e.g. "Flow"
+    "strategy_name":     str,    # e.g. "Frost"
     "order_type":        str,    # "MARKET"
     "entry_price":       float,
     "suggested_sl":      float,
@@ -260,21 +261,28 @@ All candles throughout the codebase use this shape:
 
 ---
 
-## Flow Strategy (`src/flow.py`)
+## Frost Strategy (`src/frost.py`) — ACTIVE
 
-**Type:** Trend continuation scalper (structure + sweep + reclaim)
-**Timeframes:** H1 for trend and structure, M15 for entry
-**Sessions (UTC):** Pre-London 06:00–08:00, London 08:00–11:00, Bridge 11:00–13:00, NY 13:00–16:00
+**Type:** Mean reversion night scalper
+**Timeframe:** M15 only
+**Session (UTC):** Asian 00:00–06:00, no new entries after 05:30
 
 Entry requires all of:
 
-1. H1 fractal trend defined — HH+HL = UPTREND, LH+LL = DOWNTREND. No ranging.
-2. Area of Interest via zone clustering — minimum 2 touches within a 15-pip band
-3. M15 sweep + reclaim of that AOI — wick through, close back inside, body >40% of range
-4. Active session window
-5. No high-impact news within ±30 minutes (`news_filter.py`)
+1. Inside the Asian session and before the 05:30 entry cutoff
+2. Spread below 2.0 pips — the tight-spread condition that makes the edge viable
+3. ATR between 2 and 15 pips — ranging, neither dead nor volatile
+4. Price 12–40 pips from the 20-period M15 MA. Below the floor there is no edge; above the ceiling it is a breakout, not a stretch.
+5. No trend — regression slope over the last 10 candles under 1.5 pips/candle
+6. No high-impact news within ±30 minutes (`news_filter.py`)
 
-Exit: ATR-based SL (1.2× ATR on M15), 1.5:1 minimum RR.
+Direction is the fade: price above the MA sells, below it buys. TP is 80% of the way back to the MA, SL is beyond the deviation extreme plus a 3-pip buffer, minimum RR 0.4 — a deliberately tight ratio carried by win rate, not by payoff.
+
+Backtest: 527 trades, 64.5% win rate, 1.64 profit factor.
+
+### Flow (`src/flow.py`) — RETIRED 2026-08-14
+
+Trend-continuation scalper: H1 fractal trend, AOI zone clustering, M15 sweep+reclaim, Pre-London through NY sessions, 1.2× ATR SL at 1.5:1 RR. Superseded by Frost, which bets on the opposite regime. The file stays on disk and is not imported anywhere; both strategies emit the same `flow_attempts.csv` schema so the two datasets remain comparable.
 
 ---
 
@@ -286,7 +294,7 @@ Everything the bot and the mobile app exchange lives under `users/{USER_ID}/`:
 users/{USER_ID}/
   bot_status/          balance, equity, profit, open_positions,
                        session_pnl, is_running, active_strategy, execution_mode
-  brave_config/        execution_mode (AUTO|MANUAL), strategy_config/flow/{enabled, max_trades}
+  brave_config/        execution_mode (AUTO|MANUAL), strategy_config/frost/{enabled, max_trades}
   commands/            action: start|stop
   health/              mt5_connected, firebase_connected, account_trade_allowed, status
   market_status/       per-symbol OPEN|CLOSED|RESTRICTED|UNAVAILABLE
@@ -327,7 +335,7 @@ MT5_LOGIN, MT5_PASSWORD, MT5_SERVER          # broker — all three set = no sta
                                              # otherwise credentials.py prompts on the terminal;
                                              # Firebase mt5_config / config.py only when headless
 FIREBASE_DATABASE_URL, FIREBASE_CREDENTIALS, USER_ID
-SYMBOLS, LOT_SIZE, MAX_TRADES               # no fixed-pip SL/TP: Flow sizes SL from ATR,
+SYMBOLS, LOT_SIZE, MAX_TRADES               # no fixed-pip SL/TP: Frost sizes SL from
                                              # TP from MIN_RR, and picks its own H1/M15
 RISK_PER_TRADE_PCT, DAILY_LOSS_LIMIT_PCT
 DEEPSEEK_API_KEY, FINNHUB_API_KEY

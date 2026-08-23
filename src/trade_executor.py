@@ -148,7 +148,7 @@ def _filling_modes(info) -> list[int]:
     return modes
 
 
-def place_order(symbol: str, signal: dict, config: dict, comment: str = "Brave Flow") -> dict:
+def place_order(symbol: str, signal: dict, config: dict, comment: str = "Brave Frost") -> dict:
     """
     Place a market order for a validated signal.
 

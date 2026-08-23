@@ -389,7 +389,7 @@ const DashboardScreen = memo(function DashboardScreen() {
   const pnlBadge = pnlPct === null ? DASH : `${pnlPositive ? '↑' : '↓'} ${Math.abs(pnlPct).toFixed(1)}%`;
   const pnlToday = sessionPnl === null ? DASH : `${sessionPnl.toFixed(2)} Today`;
 
-  const strategy = String(status?.active_strategy ?? 'Flow');
+  const strategy = String(status?.active_strategy ?? 'Frost');
   const pairs = Array.isArray(status?.markets_analyzed) && status.markets_analyzed.length
     ? status.markets_analyzed.join(', ')
     : DASH;
@@ -596,7 +596,7 @@ const InsightsScreen = memo(function InsightsScreen() {
           <EmptyState
             icon="newspaper-variant-outline"
             title="No news analysis yet"
-            detail="DeepSeek analyses Finnhub headlines whenever Flow detects a signal."
+            detail="DeepSeek analyses Finnhub headlines whenever Frost detects a signal."
           />
         ) : null}
 
@@ -924,7 +924,7 @@ const BrokerAccountCard = memo(function BrokerAccountCard() {
 });
 
 // ════════════════════════════════════════════════════════════════════
-// SETTINGS SCREEN — Flow is the only strategy
+// SETTINGS SCREEN — Frost is the only strategy
 // ════════════════════════════════════════════════════════════════════
 // Bot health is written every HEALTH_CHECK_INTERVAL (600s). Trust the
 // stored mt5_connected flag only while the bot is running and the health
@@ -938,20 +938,20 @@ const SettingsScreen = memo(function SettingsScreen() {
   const [expanded, setExpanded] = useState(false);
   const [actionError, setActionError] = useState(null);
 
-  const flowCfg = useMemo(() => {
-    const cfg = braveConfig?.strategy_config?.flow;
+  const frostCfg = useMemo(() => {
+    const cfg = braveConfig?.strategy_config?.frost;
     return cfg && typeof cfg === 'object' ? cfg : { enabled: true, max_trades: 2 };
   }, [braveConfig]);
 
-  const enabled = flowCfg.enabled !== false;
+  const enabled = frostCfg.enabled !== false;
 
-  const toggleFlow = useCallback(async (next) => {
+  const toggleFrost = useCallback(async (next) => {
     setActionError(await writeToDb(
       () => update(ref(db, `users/${USER_ID}/brave_config`), {
-        'strategy_config/flow/enabled': next,
-        active_strategy: 'flow',
+        'strategy_config/frost/enabled': next,
+        active_strategy: 'frost',
       }),
-      next ? 'Enabling Flow' : 'Disabling Flow',
+      next ? 'Enabling Frost' : 'Disabling Frost',
     ));
   }, []);
 
@@ -994,7 +994,7 @@ const SettingsScreen = memo(function SettingsScreen() {
             style={[s.setRow, enabled && s.raisedRow]}
             onPress={() => setExpanded(e => !e)}
           >
-            <Text style={s.setLabel}>Flow</Text>
+            <Text style={s.setLabel}>Frost</Text>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
               <StatusLabel label={enabled ? 'Active' : 'Off'} tone={enabled ? 'success' : 'neutral'} />
               <MaterialCommunityIcons
@@ -1006,12 +1006,20 @@ const SettingsScreen = memo(function SettingsScreen() {
           {expanded ? (
             <View>
               <View style={s.setRow}>
+                <Text style={s.setKey}>Style</Text>
+                <Text style={s.setValStr}>Mean reversion</Text>
+              </View>
+              <View style={s.setRow}>
+                <Text style={s.setKey}>Session</Text>
+                <Text style={s.setValStr}>Asian · 00:00–06:00 UTC</Text>
+              </View>
+              <View style={s.setRow}>
                 <Text style={s.setKey}>News</Text>
                 <Text style={s.setValStr}>DeepSeek + Finnhub</Text>
               </View>
               <View style={s.setRow}>
                 <Text style={s.setKey}>Max trades per symbol</Text>
-                <Text style={s.setValStr}>{String(flowCfg.max_trades ?? 2)}</Text>
+                <Text style={s.setValStr}>{String(frostCfg.max_trades ?? 2)}</Text>
               </View>
             </View>
           ) : null}
@@ -1020,7 +1028,7 @@ const SettingsScreen = memo(function SettingsScreen() {
             <Text style={s.setKey}>Enabled</Text>
             <TouchableOpacity
               style={[s.toggleOff, enabled && { backgroundColor: theme.success }]}
-              onPress={() => toggleFlow(!enabled)}
+              onPress={() => toggleFrost(!enabled)}
             >
               <View style={[s.toggleThumbOff, enabled && { alignSelf: 'flex-end' }]} />
             </TouchableOpacity>

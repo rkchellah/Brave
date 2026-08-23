@@ -29,7 +29,7 @@
 
 ---
 
-## Phase 2 — Flow Strategy ✅ COMPLETE
+## Phase 2 — Strategy (Flow, retired — superseded by Frost 2026-08-14) ✅ COMPLETE
 
 - [x] `src/flow.py` — H1 fractal trend + M15 sweep+reclaim
 - [x] AOI detection via zone clustering, minimum 2 touches in a 15-pip band
@@ -95,7 +95,7 @@
 - [x] Signals — Confirm/Reject with countdown and status history
 - [x] Insights — DeepSeek verdict and the Finnhub headlines behind it
 - [x] Alerts — executed trades and execution failures
-- [x] Settings — Broker Account, Flow toggle, health
+- [x] Settings — Broker Account, Frost toggle, health
 - [x] Error boundary — a render error no longer white-screens the app
 - [x] Firebase read errors surfaced as banners instead of silent stale data
 - [x] All writes report failures to the user
@@ -153,11 +153,13 @@
 | Aug 16 2026 | `run()` set `is_running = True` unconditionally, so a Stop set in the app was undone by the next process restart — regression of the Aug 10 fix, reintroduced by the v3.0 rewrite | Resolved | `_resume_run_state()` restores the stored `bot_status.is_running`, snapshotted before this process writes to it |
 | Aug 16 2026 | `flow.py` used `datetime.utcnow()` for session gating — deprecated on Python 3.12+, and this project runs 3.14 | Resolved | `datetime.now(timezone.utc)` |
 | Aug 16 2026 | `logs/trade_log.csv` destroyed during a `trade_logger` test — `_rewrite`'s default `path=LOG_PATH` bound at definition time and ignored a redirected module path | Resolved | Rebuilt all 66 rows from `brave_bot.log` + `flow_attempts.csv` (16,082 vs 16,103 bytes); `_rewrite` now requires path and columns explicitly |
+| Aug 14 2026 | Strategy swapped Flow → Frost (mean reversion, Asian 00:00–06:00 UTC). Frost lacked the `last_attempt`/`_record_attempt` instrumentation `graph.node_detect` depends on — wiring it in as-is would have raised `AttributeError` on every no-signal cycle | Resolved | Parity `_record_attempt` added to `frost.py` with Flow's exact signature and CSV schema; `utcnow()` and root-logger issues fixed at the same time |
+| Aug 14 2026 | Flow's Aug 11–14 dataset would have been mixed with Frost's under one filename | Resolved | Archived as `flow_attempts_archive_2026-08-11_to_14.csv`; Frost starts a fresh `flow_attempts.csv` |
 | Aug 16 2026 | No test suite — every fix in `BUG_LOG.md` is one rewrite away from silently reopening, as the `is_running` regression demonstrates | Open | Highest-value next task; start with the gates that can stop a trade |
 
 ---
 
-## Backtest Results (Flow)
+## Backtest Results (Flow — retired strategy, kept for comparison)
 
 | Metric | Result |
 |---|---|

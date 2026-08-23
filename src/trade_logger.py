@@ -89,8 +89,9 @@ def log_detect_attempt(row: dict) -> None:
     """
     Append one DETECT attempt to logs/flow_attempts.csv.
 
-    Captures near-misses (AOI distance, missing sweep, ranging, etc.) so a
-    week of observation can answer whether Flow is too strict.
+    Captures near-misses (distance-to-level, missing trigger, wrong regime, etc.)
+    so a week of observation can answer whether the active strategy is too
+    strict. Both Flow and Frost write this same schema.
     Never raises.
     """
     payload = dict(row)
@@ -111,7 +112,10 @@ def log_execution(symbol: str, signal: dict, lot: float, ticket: int,
     _append_row(path, EXECUTION_COLUMNS, {
         "timestamp":       datetime.now(timezone.utc).isoformat(),
         "symbol":          symbol,
-        "strategy":        signal.get("strategy_name", "Flow"),
+        # No strategy default: a signal that reached a fill without naming itself
+        # is a bug, and silently stamping it with whichever strategy is current
+        # would hide that in the one CSV that records real money.
+        "strategy":        signal.get("strategy_name", "unknown"),
         "direction":       signal.get("direction", ""),
         "entry_price":     price,
         "sl":              sl,

@@ -1,10 +1,10 @@
-# Brave — Flow Trading Agent
+# Brave — Frost Trading Agent
 
-A five-node LangGraph pipeline for safer forex execution — Flow strategy, DeepSeek news analysis, MT5 orders.
+A five-node LangGraph pipeline for safer forex execution — Frost strategy, DeepSeek news analysis, MT5 orders.
 
 Most retail trading bots fail the same way: they enter on a signal with no context, get stopped out by news, and repeat until the account is gone. A strategy fires, an order hits the market, and nobody checks whether the Fed just spoke or three positions are already open on the same pair. The trader finds out when the daily loss limit is already blown.
 
-This agent addresses that directly. On every cycle it scans a symbol, and if Flow finds a setup it runs news analysis and risk checks before a single order is placed. Uncertain sentiment goes to the phone — not to the market.
+This agent addresses that directly. On every cycle it scans a symbol, and if Frost finds a setup it runs news analysis and risk checks before a single order is placed. Uncertain sentiment goes to the phone — not to the market.
 
 ## What it does
 
@@ -12,7 +12,7 @@ This agent addresses that directly. On every cycle it scans a symbol, and if Flo
 
 The agent calls five nodes in sequence:
 
-**DETECT** — Flow scans H1 trend alignment and M15 sweep+reclaim. If no setup exists, the pipeline ends here.
+**DETECT** — Frost scans the M15 chart for price stretched from its moving average in a ranging Asian-session market. If no setup exists, the pipeline ends here.
 
 **ANALYSE** — Finnhub fetches recent headlines for the pair. DeepSeek reads them and returns CONFIRM, OPPOSE, or UNCERTAIN with a one-sentence reason.
 
@@ -24,7 +24,11 @@ The agent calls five nodes in sequence:
 
 Each node is a plain function. Routing is conditional edges on `BraveState`. The bot loop calls `run_brave_graph(symbol, config, firebase)` once per symbol per cycle.
 
-Every DETECT writes one row to `logs/flow_attempts.csv` (H1 trend, AOI distance, sweep+reclaim, signal/no-signal) — including near-misses. News-filter pauses and max-trades skips write the same schema (`reason=news_filter_pause` / `reason=max_trades_reached`) before DETECT runs. Full setups that leave DETECT also append to `logs/trade_log.csv`. When an MT5 position later hits SL/TP, the fast-status loop back-fills `exit_price`, `exit_reason`, and `pnl` on that row.
+Every DETECT writes one row to `logs/flow_attempts.csv` (regime, MA deviation, setup confirmed, signal/no-signal) — including near-misses. News-filter pauses and max-trades skips write the same schema (`reason=news_filter_pause` / `reason=max_trades_reached`) before DETECT runs. Full setups that leave DETECT also append to `logs/trade_log.csv`. When an MT5 position later hits SL/TP, the fast-status loop back-fills `exit_price`, `exit_reason`, and `pnl` on that row.
+
+**Active strategy: Frost** — Asian-session mean reversion (00:00–06:00 UTC, no new entries after 05:30). It fades price away from a 20-period M15 MA once deviation reaches 12–40 pips, requires a ranging market (ATR 2–15 pips, no trend slope) and a spread under 2 pips, and targets the MA. This is the opposite regime bet to the retired Flow strategy, which needed a trend. `src/flow.py` stays on disk, unused and unreferenced.
+
+Both strategies write the same `flow_attempts.csv` schema, so their datasets stay comparable — for Frost, `h1_trend` carries RANGING/TRENDING, `aoi_distance_pips` carries signed MA deviation, and `sweep_reclaim` marks whether the mean-reversion setup confirmed. Flow's Aug 11–14 rows are archived in `logs/flow_attempts_archive_2026-08-11_to_14.csv`.
 
 All three CSVs are written by `src/trade_logger.py` and only by it, at paths anchored to the project root through `config.LOG_DIR` — running the bot from `src/` used to create a second, unreconciled log tree. The daily loss limit lives in `src/risk.py`, which both the bot loop and the graph's RISK_CHECK call, so the two cannot drift apart.
 
@@ -72,7 +76,7 @@ npm install --legacy-peer-deps
 eas build --platform android --profile preview
 ```
 
-Install the APK on an Android device. The app reads live from Firebase Realtime Database — no separate server. Screens: Dashboard (balance, equity, start/stop, AUTO/MANUAL), Signals (Confirm/Reject), Insights (DeepSeek verdict + Finnhub headlines), Alerts, Settings (Broker Account, Flow toggle, health including MT5 AutoTrading toolbar state).
+Install the APK on an Android device. The app reads live from Firebase Realtime Database — no separate server. Screens: Dashboard (balance, equity, start/stop, AUTO/MANUAL), Signals (Confirm/Reject), Insights (DeepSeek verdict + Finnhub headlines), Alerts, Settings (Broker Account, Frost toggle, health including MT5 AutoTrading toolbar state).
 
 Bot health is HEALTHY only when MT5 is connected, Firebase is reachable, the broker account allows trading, **and** the local MT5 AutoTrading toolbar toggle is on. A True→False flip on that toggle pushes an alert to the app.
 
@@ -135,29 +139,34 @@ hitl_kind:   genuine_uncertainty | data_unavailable | manual_mode
 
 `data_unavailable` is only used in MANUAL (AUTO skips those setups before HITL). The app Signals card shows **Mixed news** vs **Data unavailable** so the two cases cannot be confused.
 
-The app shows Confirm / Reject. The bot polls that record. CONFIRMED proceeds to order placement. REJECTED or EXPIRED is logged and discarded. The 3-minute window exists because a Flow setup at M15 is stale once price has moved off the AOI.
+The app shows Confirm / Reject. The bot polls that record. CONFIRMED proceeds to order placement. REJECTED or EXPIRED is logged and discarded. The 3-minute window exists because a Frost setup at M15 is stale once price has moved off the AOI.
 
 AUTO vs MANUAL is read from Firebase `brave_config/execution_mode` each cycle, so the app can switch it without restarting the bot.
 
-## Flow strategy
+## Frost strategy
 
-Flow catches trend continuations at Areas of Interest on H1 with M15 entry confirmation.
+Frost fades price back toward its mean during the quiet Asian session, when spreads are tightest and ranges hold.
 
 Entry requires all of:
 
-- H1 fractal trend defined (HH+HL = UPTREND, LH+LL = DOWNTREND)
-- AOI via zone clustering — minimum 2 touches within a 15-pip band
-- M15 sweep+reclaim: wick through the AOI, close back inside, body >40% of candle range
-- Active session UTC: Pre-London 06:00–08:00, London 08:00–11:00, Bridge 11:00–13:00, NY 13:00–16:00
+- Asian session UTC 00:00–06:00, no new entries after 05:30 (never hold into the London open)
+- Spread below 2.0 pips
+- ATR between 2 and 15 pips — ranging, neither dead nor volatile
+- Price 12–40 pips from the 20-period M15 MA
+- No trend — regression slope under 1.5 pips/candle over the last 10 candles
 
-Exit: ATR-based SL (1.2× ATR on M15), 1.5:1 minimum RR.
+Direction is the fade: above the MA sells, below it buys. Exit: TP at 80% of the distance back to the MA, SL beyond the deviation extreme plus 3 pips, minimum RR 0.4 — tight by design, carried by win rate rather than payoff.
 
-Backtest (50,000 M15 candles, EURUSD + GBPUSD, ~17 months): 372 trades, 41% win rate, 1.24 profit factor, +65.8% return, 14.6% max drawdown.
+Backtest: 527 trades, 64.5% win rate, 1.64 profit factor.
+
+### Flow — retired 2026-08-14
+
+The previous strategy caught trend continuations at H1 Areas of Interest with M15 sweep+reclaim confirmation, across Pre-London through NY sessions (372 trades, 41% win rate, 1.24 profit factor). Frost is the opposite regime bet. `src/flow.py` remains on disk, imported by nothing.
 
 ## Stack
 
 - Orchestration: LangGraph 1.2.9
-- Strategy: Flow — H1 fractal trend + M15 sweep+reclaim (fxalexg methodology)
+- Strategy: Frost — Asian-session mean reversion (MA deviation fade, Forex Fury profile)
 - News: Finnhub general news API + DeepSeek-chat (`deepseek-chat`, temperature 0.1)
 - Execution: MetaTrader5 Python API (RoboForex demo/live)
 - Bridge: Firebase Realtime Database
@@ -183,7 +192,10 @@ Brave/
 ├── src/
 │   ├── bot.py              # Main loop, Firebase init, credential resolution, command listener
 │   ├── graph.py            # LangGraph pipeline (DETECT→ANALYSE→RISK→EXECUTE/HITL)
-│   ├── flow.py             # Flow strategy (H1 trend + M15 sweep+reclaim)
+│   ├── frost.py            # ACTIVE strategy (Asian-session mean reversion)
+│   ├── flow.py             # Retired strategy (H1 trend + M15 sweep+reclaim)
+│   ├── risk.py             # Session equity + daily loss limit
+│   ├── trade_logger.py     # All CSV writes
 │   ├── trade_executor.py   # Signal validation, risk-based sizing, MT5 order placement
 │   ├── news_fetcher.py     # Finnhub fetch + DeepSeek prompt formatting
 │   ├── news_filter.py      # High-impact news calendar filter
