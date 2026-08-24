@@ -187,11 +187,28 @@
 
 ---
 
+## [2026-08-23] Migration guard inferred completion from unrelated data — didn't run
+**Symptom:** Six days (Aug 17-23) with the bot never fully starting; when finally audited, Firebase still showed `active_strategy: "flow"` and `strategy_config.frost.enabled: false` — meaning any restart during this window would have run silently with zero signals, logging "Frost disabled" every cycle while appearing healthy.
+**Root cause:** Migration guard checked `"frost" in strategy_config` as proof the Aug-14 migration had run. A stale `frost` key from the pre-QuantifyX era (unrelated, `enabled: false`) already existed in this database, satisfying that check on the very first pass and causing the migration to silently no-op forever.
+**Fix:** Explicit migration marker (`strategy_config_migrated_v1`) instead of inferring from data shape.
+**Pattern tag:** `stale-data-trusted-as-current` — third occurrence (see MT5-Connected-showed-Yes, health-check-wrong-flag). Rule going forward: never infer "has this run before" from the presence/shape of data that could exist for other reasons — always use an explicit marker.
+
+---
+
+## [2026-08-24] Pair scorer picked pairs Frost was never validated on
+**Symptom:** No error. First live cycles after the restart analysed **GBPUSD, EURUSD, USDJPY** — visible in `bot_status.markets_analyzed` and in every attempt row. Frost's own banner prints "Pairs: GBPUSD, USDCAD, EURCHF" on the line above, so the log asserted one pair set while the bot worked a different one.
+**Blast radius:** Caught before the observation week opened, so no trades were taken on the wrong set. Had it not been caught, the week would have produced EURUSD and USDJPY data attributed to a strategy validated only on GBPUSD/USDCAD/EURCHF (64.5% WR, 1.64 PF, 527 trades), while USDCAD and EURCHF — two thirds of the validated set — logged nothing. Only GBPUSD overlapped. The dataset would have looked complete and been unusable.
+**Root cause:** `_select_pairs()` scored all of `config.SYMBOLS` and kept the top 3 by spread + volatility + a `major_bonus` of 3.0 for EURUSD/GBPUSD/XAUUSD — a Flow-era heuristic, correct when Flow traded majors across four sessions, never revisited when Frost replaced it on 2026-08-14. The strategy swap changed the strategy, the session window and the dataset boundary, but not the pair chooser feeding it. Frost has no symbol gate of its own — `analyze()` filters on session and data only — so nothing downstream would have refused the wrong symbol.
+**Fix:** `Frost.PAIRS = ("GBPUSD", "USDCAD", "EURCHF")` is now a real constant, used both by the startup banner and by `_select_pairs()`, which scores that tuple instead of `config.SYMBOLS`. Scoring is kept — it still drops a pair with no tick, no rates, or a disabled trade mode — it just cannot reach outside the validated set. A pair in `PAIRS` but missing from `config.SYMBOLS` logs a WARNING naming it; an empty candidate list logs an ERROR rather than silently falling back — `src/frost.py`, `src/bot.py._select_pairs()`. Also found during the same check: EURCHF was not in MT5 Market Watch, so `symbol_info_tick()` returned None and `_refresh_market_status` marked it CLOSED — subscribed in the terminal, but `symbol_select` is still only called at order time in `trade_executor.py:165`, never at startup.
+**Pattern tag:** `config-outlived-its-strategy` (new tag — a tuning decision that was right for the previous strategy survived the swap unexamined, because swapping the strategy object doesn't touch the code that feeds it)
+
+---
+
 ## Patterns Observed
 
 | Pattern tag | Count |
 | --- | --- |
-| `stale-data-trusted-as-current` | 2 |
+| `stale-data-trusted-as-current` | 3 |
 | `no-process-check` | 1 |
 | `silent-fail-open` | 3 |
 | `never-actually-worked` | 1 |
@@ -210,6 +227,7 @@
 | `cwd-relative-path` | 1 |
 | `fixed-then-regressed` | 1 |
 | `strategy-swap` | 1 |
+| `config-outlived-its-strategy` | 1 |
 
 A tag reaching 2+ means the same class of mistake is recurring — fix the class, not just the instance.
 

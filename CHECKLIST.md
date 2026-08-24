@@ -65,7 +65,7 @@
 - [x] Filling-mode fallback (IOC → FOK → RETURN)
 - [x] Transient retcodes retried once at a refreshed price
 - [x] Every execution appended to `logs/trades/trades_YYYY-MM-DD.csv`
-- [x] Every DETECT attempt appended to `logs/flow_attempts.csv` (near-misses included)
+- [x] Every DETECT attempt appended to `logs/frost_attempts.csv` (near-misses included)
 - [x] Max-trades skip before DETECT (`reason=max_trades_reached`) — same early-exit as news_filter_pause
 - [x] Full setups that leave DETECT appended to `logs/trade_log.csv`
 - [x] Closed MT5 tickets back-fill `exit_price` / `exit_reason` / `pnl` on that CSV row

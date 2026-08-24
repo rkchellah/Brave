@@ -165,7 +165,7 @@ Guarantees:
 - **Never raises** — callers receive `{ok, ticket, price, lot, retcode, error}`
 
 Every execution appends to `logs/trades/trades_YYYY-MM-DD.csv` via
-`trade_logger.log_execution()`. All three CSVs — `trade_log.csv`, `flow_attempts.csv`
+`trade_logger.log_execution()`. All three CSVs — `trade_log.csv`, `frost_attempts.csv`
 and the per-day execution files — are written by `trade_logger` alone, so path
 anchoring and failure handling cannot drift between them.
 
@@ -282,7 +282,7 @@ Backtest: 527 trades, 64.5% win rate, 1.64 profit factor.
 
 ### Flow (`src/flow.py`) — RETIRED 2026-08-14
 
-Trend-continuation scalper: H1 fractal trend, AOI zone clustering, M15 sweep+reclaim, Pre-London through NY sessions, 1.2× ATR SL at 1.5:1 RR. Superseded by Frost, which bets on the opposite regime. The file stays on disk and is not imported anywhere; both strategies emit the same `flow_attempts.csv` schema so the two datasets remain comparable.
+Trend-continuation scalper: H1 fractal trend, AOI zone clustering, M15 sweep+reclaim, Pre-London through NY sessions, 1.2× ATR SL at 1.5:1 RR. Superseded by Frost, which bets on the opposite regime. The file stays on disk and is not imported anywhere; both strategies emit the same `frost_attempts.csv` schema so the two datasets remain comparable.
 
 ---
 

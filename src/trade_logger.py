@@ -2,7 +2,7 @@
 trade_logger.py — Append-only CSV logs. Every CSV Brave writes lives here.
 
 log_signal()         → logs/trade_log.csv                (full setups that leave DETECT)
-log_detect_attempt() → logs/flow_attempts.csv            (every DETECT, including near-misses)
+log_detect_attempt() → logs/frost_attempts.csv           (every DETECT, including near-misses)
 log_execution()      → logs/trades/trades_YYYY-MM-DD.csv (broker fills, per day)
 
 Exit fields on trade_log stay blank until update_trade_outcome() patches the
@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 
 LOG_DIR      = Path(_LOG_DIR)
 LOG_PATH     = LOG_DIR / "trade_log.csv"
-ATTEMPT_PATH = LOG_DIR / "flow_attempts.csv"
+ATTEMPT_PATH = LOG_DIR / "frost_attempts.csv"
 TRADES_DIR   = LOG_DIR / "trades"
 
 COLUMNS = [
@@ -87,7 +87,7 @@ def log_signal(row: dict) -> None:
 
 def log_detect_attempt(row: dict) -> None:
     """
-    Append one DETECT attempt to logs/flow_attempts.csv.
+    Append one DETECT attempt to logs/frost_attempts.csv.
 
     Captures near-misses (distance-to-level, missing trigger, wrong regime, etc.)
     so a week of observation can answer whether the active strategy is too

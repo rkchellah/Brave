@@ -52,6 +52,7 @@ from config import (  # noqa: E402
 )
 import credentials as mt5_credentials  # noqa: E402
 import news_filter  # noqa: E402
+from frost import Frost  # noqa: E402
 from graph import run_brave_graph  # noqa: E402
 from news_filter import NewsFilter  # noqa: E402
 from risk import daily_loss_limit_hit, session_metrics  # noqa: E402
@@ -104,6 +105,19 @@ class BraveBot:
     MARKET_CACHE_SECONDS  = 60     # market status cache lifetime
     MT5_RETRY_ATTEMPTS    = 3      # connection attempts at startup
     RECONCILE_INTERVAL    = 15     # seconds between trade_log exit backfills
+
+    # Marker proving the flow->frost strategy_config migration has completed on
+    # this database. Lives at the top level of brave_config, deliberately NOT
+    # inside strategy_config — the point is that it cannot be confused with, or
+    # satisfied by, strategy data that exists for unrelated reasons.
+    MIGRATION_FLAG = "strategy_config_migrated_v1"
+
+    # Operator-resolved cap for that migration. This database held
+    # flow.max_trades=1 (live) and a stale frost.max_trades=3 (pre-QuantifyX,
+    # disabled); resolved to 1 on 2026-08-24 — flow's value, set deliberately on
+    # the strategy that was actually running. None means "no decision recorded":
+    # a disagreement then aborts the migration instead of guessing a risk limit.
+    MIGRATION_MAX_TRADES: int | None = 1
 
     def __init__(self):
         # firebase_enabled MUST be set first — the Firebase listener thread
@@ -340,6 +354,9 @@ class BraveBot:
                 "execution_mode":  EXECUTION_MODE,
                 "strategy_config": {"frost": {"enabled": True, "max_trades": MAX_TRADES}},
                 "last_switched":   None,
+                # Seeded straight to frost, so the flow->frost migration has
+                # nothing to do here. Marked done so it never runs on this install.
+                self.MIGRATION_FLAG: True,
             })
             log.info("brave_config initialized in Firebase")
         else:
@@ -362,48 +379,100 @@ class BraveBot:
         """
         One-time move of strategy_config from flow to frost.
 
-        An existing install has `strategy_config/flow` and no frost entry, so
-        `_flow_enabled()` would read a missing key, fall through to its
-        permissive default, and the app's Settings toggle would write to a
-        strategy nothing runs. Carries flow's max_trades across so the user's
-        configured cap survives the swap, then drops the flow key entirely.
+        An existing install has `strategy_config/flow`, so `_strategy_enabled()`
+        would read a missing frost key, fall through to its permissive default,
+        and the app's Settings toggle would write to a strategy nothing runs.
 
-        Idempotent: once frost exists this returns without touching Firebase,
-        so a restart cannot re-run it or resurrect a flow key the user removed.
+        Idempotent via an explicit marker written on completion, NOT by
+        inspecting the data. The previous guard treated "a frost key exists" as
+        proof this had run; a stale pre-QuantifyX `frost` entry (enabled: False)
+        already satisfied it on the first pass, so the migration silently
+        no-opped forever. Never infer "has this run" from the shape of data that
+        can exist for other reasons.
         """
-        strategy_config = brave_config.get("strategy_config")
-        if not isinstance(strategy_config, dict):
-            return
-        if "flow" not in strategy_config or "frost" in strategy_config:
+        if brave_config.get(self.MIGRATION_FLAG) is True:
             return
 
-        flow_cfg = strategy_config.get("flow")
-        max_trades = MAX_TRADES
-        if isinstance(flow_cfg, dict):
-            try:
-                max_trades = int(flow_cfg.get("max_trades", MAX_TRADES) or MAX_TRADES)
-            except (TypeError, ValueError):
-                log.warning(
-                    f"Migration: unreadable max_trades on flow "
-                    f"({flow_cfg.get('max_trades')!r}) — using {MAX_TRADES}"
-                )
+        strategy_config = brave_config.get("strategy_config")
+        if not isinstance(strategy_config, dict) or "flow" not in strategy_config:
+            # Nothing to migrate on this install — record that so the check
+            # doesn't re-run, but touch no strategy data.
+            self._mark_migrated()
+            return
+
+        max_trades = self._resolve_migration_max_trades(strategy_config)
+        if max_trades is None:
+            # Unresolved conflict — abort without writing and without marking
+            # done, so it can run again once a decision is recorded.
+            return
 
         # Rebuild rather than delete-then-add: any other strategy key present is
         # preserved, and the whole swap lands in a single write so a failure
-        # mid-migration cannot leave neither strategy configured.
+        # mid-migration cannot leave neither strategy configured. Any pre-existing
+        # frost entry is overwritten outright — it predates the swap and its
+        # enabled/max_trades values are not the user's intent for this strategy.
         migrated = {k: v for k, v in strategy_config.items() if k != "flow"}
         migrated["frost"] = {"enabled": True, "max_trades": max_trades}
 
         try:
             self.brave_config_ref.update({
-                "strategy_config": migrated,
-                "active_strategy": "frost",
+                "strategy_config":   migrated,
+                "active_strategy":   "frost",
+                self.MIGRATION_FLAG: True,
             })
         except Exception as e:
             log.error(f"Migration: could not rewrite strategy_config ({e}) — leaving flow in place")
             return
 
         log.info(f"Migrated strategy_config: flow -> frost (max_trades={max_trades})")
+
+    def _resolve_migration_max_trades(self, strategy_config: dict) -> int | None:
+        """
+        Decide the frost cap the migration writes. Returns None to abort.
+
+        max_trades is never auto-inherited when two strategies disagree: this
+        database carried flow.max_trades=1 (the live, deliberately-set strategy)
+        alongside a stale frost.max_trades=3 left over from before QuantifyX.
+        Picking either silently is a guess about the user's risk cap, so an
+        unresolved disagreement aborts loudly instead.
+        """
+        def _read(key: str) -> int | None:
+            cfg = strategy_config.get(key)
+            if not isinstance(cfg, dict) or cfg.get("max_trades") is None:
+                return None
+            try:
+                return int(cfg["max_trades"])
+            except (TypeError, ValueError):
+                log.warning(f"Migration: unreadable max_trades on {key} ({cfg['max_trades']!r})")
+                return None
+
+        flow_mt  = _read("flow")
+        frost_mt = _read("frost")
+
+        if self.MIGRATION_MAX_TRADES is not None:
+            log.info(
+                f"Migration: max_trades flow={flow_mt} frost={frost_mt} — "
+                f"using operator-resolved {self.MIGRATION_MAX_TRADES}"
+            )
+            return self.MIGRATION_MAX_TRADES
+
+        if flow_mt is not None and frost_mt is not None and flow_mt != frost_mt:
+            log.error(
+                f"Migration ABORTED: flow.max_trades={flow_mt} disagrees with "
+                f"frost.max_trades={frost_mt}. Set BraveBot.MIGRATION_MAX_TRADES "
+                f"to the intended cap — refusing to guess a risk limit."
+            )
+            return None
+
+        resolved = flow_mt if flow_mt is not None else (frost_mt if frost_mt is not None else MAX_TRADES)
+        log.info(f"Migration: max_trades flow={flow_mt} frost={frost_mt} — using {resolved}")
+        return resolved
+
+    def _mark_migrated(self) -> None:
+        try:
+            self.brave_config_ref.update({self.MIGRATION_FLAG: True})
+        except Exception as e:
+            log.warning(f"Migration: could not write {self.MIGRATION_FLAG} ({e})")
 
     # ═══════════════════════════════════════════════════════════════
     # FIREBASE LISTENERS
@@ -521,11 +590,31 @@ class BraveBot:
     # ═══════════════════════════════════════════════════════════════
 
     def _select_pairs(self, max_pairs: int = 3) -> list[str]:
-        """Score symbols on spread and volatility, keep the best few."""
+        """
+        Score the active strategy's validated pairs on spread and volatility.
+
+        Scored over `Frost.PAIRS`, NOT `config.SYMBOLS`. Scoring the full symbol
+        list is a Flow-era behaviour: the `major_bonus` below favours EURUSD and
+        XAUUSD, so the top three came back as GBPUSD/EURUSD/USDJPY — two pairs
+        Frost was never validated on, while USDCAD and EURCHF, which it was,
+        never got analysed. A backtest's win rate says nothing about symbols the
+        backtest never saw.
+        """
         log.info("Selecting trading pairs...")
         scored = []
 
-        for symbol in SYMBOLS:
+        candidates = [s for s in Frost.PAIRS if s in SYMBOLS]
+        skipped    = [s for s in Frost.PAIRS if s not in SYMBOLS]
+        if skipped:
+            log.warning(
+                f"Frost pairs missing from config.SYMBOLS and therefore untradable: "
+                f"{', '.join(skipped)}"
+            )
+        if not candidates:
+            log.error("No Frost pair is present in config.SYMBOLS — nothing to trade")
+            return []
+
+        for symbol in candidates:
             try:
                 info = mt5.symbol_info(symbol)
                 if info is None or info.trade_mode != mt5.SYMBOL_TRADE_MODE_FULL:

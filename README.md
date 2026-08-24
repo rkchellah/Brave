@@ -24,11 +24,11 @@ The agent calls five nodes in sequence:
 
 Each node is a plain function. Routing is conditional edges on `BraveState`. The bot loop calls `run_brave_graph(symbol, config, firebase)` once per symbol per cycle.
 
-Every DETECT writes one row to `logs/flow_attempts.csv` (regime, MA deviation, setup confirmed, signal/no-signal) — including near-misses. News-filter pauses and max-trades skips write the same schema (`reason=news_filter_pause` / `reason=max_trades_reached`) before DETECT runs. Full setups that leave DETECT also append to `logs/trade_log.csv`. When an MT5 position later hits SL/TP, the fast-status loop back-fills `exit_price`, `exit_reason`, and `pnl` on that row.
+Every DETECT writes one row to `logs/frost_attempts.csv` (regime, MA deviation, setup confirmed, signal/no-signal) — including near-misses. News-filter pauses and max-trades skips write the same schema (`reason=news_filter_pause` / `reason=max_trades_reached`) before DETECT runs. Full setups that leave DETECT also append to `logs/trade_log.csv`. When an MT5 position later hits SL/TP, the fast-status loop back-fills `exit_price`, `exit_reason`, and `pnl` on that row.
 
 **Active strategy: Frost** — Asian-session mean reversion (00:00–06:00 UTC, no new entries after 05:30). It fades price away from a 20-period M15 MA once deviation reaches 12–40 pips, requires a ranging market (ATR 2–15 pips, no trend slope) and a spread under 2 pips, and targets the MA. This is the opposite regime bet to the retired Flow strategy, which needed a trend. `src/flow.py` stays on disk, unused and unreferenced.
 
-Both strategies write the same `flow_attempts.csv` schema, so their datasets stay comparable — for Frost, `h1_trend` carries RANGING/TRENDING, `aoi_distance_pips` carries signed MA deviation, and `sweep_reclaim` marks whether the mean-reversion setup confirmed. Flow's Aug 11–14 rows are archived in `logs/flow_attempts_archive_2026-08-11_to_14.csv`.
+Both strategies write the same `frost_attempts.csv` schema, so their datasets stay comparable — for Frost, `h1_trend` carries RANGING/TRENDING, `aoi_distance_pips` carries signed MA deviation, and `sweep_reclaim` marks whether the mean-reversion setup confirmed. Flow's Aug 11–14 rows are archived in `logs/flow_attempts_archive_2026-08-11_to_14.csv`.
 
 All three CSVs are written by `src/trade_logger.py` and only by it, at paths anchored to the project root through `config.LOG_DIR` — running the bot from `src/` used to create a second, unreconciled log tree. The daily loss limit lives in `src/risk.py`, which both the bot loop and the graph's RISK_CHECK call, so the two cannot drift apart.
 

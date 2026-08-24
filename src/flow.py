@@ -3,7 +3,7 @@ flow.py — the Flow strategy: the only signal source Brave runs.
 
 analyze() is the whole public surface. It returns a signal dict or None, and
 records why on self.last_attempt so graph.py can log near-misses to
-flow_attempts.csv without the strategy knowing anything about CSVs.
+frost_attempts.csv without the strategy knowing anything about CSVs.
 
 Pure analysis: it reads candles and returns a verdict. It places no orders,
 writes no files and touches no Firebase.

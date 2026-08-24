@@ -119,7 +119,7 @@ def node_detect(state: BraveState) -> BraveState:
 
 
 def _log_detect_attempt(symbol: str, attempt: dict | None) -> None:
-    """Write one flow_attempts.csv row for this DETECT (including near-misses)."""
+    """Write one frost_attempts.csv row for this DETECT (including near-misses)."""
     row = dict(attempt or {})
     row.setdefault("symbol", symbol)
     row.setdefault("outcome", "no-signal")

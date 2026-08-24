@@ -3,7 +3,7 @@ frost.py — the Frost strategy: Asian-session mean reversion.
 
 analyze() is the whole public surface. It returns a signal dict or None, and
 records why on self.last_attempt so graph.py can log near-misses to
-flow_attempts.csv without the strategy knowing anything about CSVs.
+frost_attempts.csv without the strategy knowing anything about CSVs.
 
 Pure analysis: it reads candles and returns a verdict. It places no orders,
 writes no files and touches no Firebase.
@@ -61,6 +61,14 @@ class Frost:
     ASIAN_CLOSE = time(6, 0)    # 06:00 UTC (close before London volatility)
     CUTOFF_TIME = time(5, 30)   # 05:30 UTC — no new entries after this
 
+    # ─── Validated Pairs ────────────────────────────────────────────
+    # The only symbols Frost was validated on: 64.5% WR / 1.64 PF over 527
+    # trades came from these three and nothing else. Thresholds below are
+    # pip-based and tuned for tight Asian-session FX spreads, so they do not
+    # transfer to metals or to pairs with a wider overnight spread. The bot
+    # scores its tradable set from this tuple, not from config.SYMBOLS.
+    PAIRS = ("GBPUSD", "USDCAD", "EURCHF")
+
     # ─── MA Settings ────────────────────────────────────────────────
     MA_PERIOD   = 20            # N-period moving average on M15
     ATR_PERIOD  = 14            # ATR for range detection
@@ -75,7 +83,8 @@ class Frost:
     # ─── Exit Settings ──────────────────────────────────────────────
     TP_BUFFER_PIPS  = 2.0       # TP slightly before MA (don't chase the exact level)
     SL_BUFFER_PIPS  = 3.0       # SL beyond deviation extreme
-    MIN_RR          = 0.4       # Lowered for 60% TP logic
+    MIN_RR          = 0.4       # Floor for the 80% TP logic below (RR lands 0.64-0.74)
+    RR_EPSILON      = 1e-6      # Absorbs float round-trip error on the RR comparison
     MAX_CANDLES_HOLD = 16       # Max candles to hold (4 hours on M15) — force close
 
     def __init__(self, config: dict):
@@ -87,7 +96,7 @@ class Frost:
         log.info("   Session: Asian only (00:00–06:00 UTC)")
         log.info(f"   Entry: {self.MIN_DEVIATION_PIPS}–{self.MAX_DEVIATION_PIPS} pip deviation from {self.MA_PERIOD}-MA")
         log.info(f"   Max spread: {self.MAX_SPREAD_PIPS} pips")
-        log.info(f"   Pairs: GBPUSD, USDCAD, EURCHF")
+        log.info(f"   Pairs: {', '.join(self.PAIRS)}")
 
     def _record_attempt(
         self,
@@ -103,7 +112,7 @@ class Frost:
         Snapshot this DETECT attempt for CSV logging — no trading side effects.
 
         Signature and emitted keys match Flow's exactly, so both strategies write
-        the same flow_attempts.csv schema and a season of data stays comparable.
+        the same frost_attempts.csv schema and a season of data stays comparable.
         The column names are Flow's; for Frost they carry the analogous meaning:
 
             h1_trend           RANGING / TRENDING — Frost's regime check, which
@@ -309,6 +318,10 @@ class Frost:
         — the same split Flow makes.
         """
 
+        # TP takes 80% of the distance back to the MA — stopping short of the exact
+        # level rather than chasing it. 0.8 is the validated figure: the 527-trade
+        # backtest behind 64.5% WR / 1.64 PF ran this formula, and its RR spread
+        # (0.64-0.74) is 0.8*dev/(dev+SL_BUFFER) across the 12-40 pip entry band.
         if direction == "BUY":
             # Price below MA — buy back toward MA
             entry = current_price
@@ -328,7 +341,11 @@ class Frost:
 
         rr_ratio = reward / risk
 
-        if rr_ratio < self.MIN_RR:
+        # TP is a fraction of the distance to the MA and SL is the deviation plus a
+        # buffer, so RR is fixed by construction — the epsilon keeps a value that
+        # is correct by construction from being rejected by float round-trip error,
+        # the same tolerance Flow applies for the same reason.
+        if rr_ratio < self.MIN_RR - self.RR_EPSILON:
             log.info(
                 f"   [{symbol}] Frost: RR {rr_ratio:.2f} < {self.MIN_RR} — skipping"
             )
