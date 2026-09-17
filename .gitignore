@@ -51,3 +51,10 @@ sentiment_log*
 
 # Python cache
 __pycache__
+
+# Internal working notes - not for public repo
+BUG_LOG.md
+CHECKLIST.md
+TEAM_RULES.md
+WORKFLOW.md
+RULES.md

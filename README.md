@@ -99,7 +99,7 @@ The app listens on the same paths. Same Firebase project, same UID. If the app s
 The MT5 account can be changed from the app instead of by editing code. Settings → **Broker Account** writes login, password and server to `mt5_config`:
 
 ```
-login:      68343238
+login:      00000000
 password:   (plaintext)
 server:     "RoboForex-Pro"
 updated_at: ISO timestamp
