@@ -1,0 +1,31 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "users": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        "commands": {
+          ".write": "auth != null && auth.uid === $uid && newData.hasChildren(['action', 'timestamp']) && (newData.child('action').val() === 'start' || newData.child('action').val() === 'stop') && newData.child('timestamp').isString()"
+        },
+        "brave_config": {
+          "execution_mode": {
+            ".write": "auth != null && auth.uid === $uid && (newData.val() === 'AUTO' || newData.val() === 'MANUAL')"
+          },
+          "strategy_config": {
+            "frost": {
+              "enabled": {
+                ".write": "auth != null && auth.uid === $uid && newData.isBoolean()"
+              }
+            }
+          }
+        },
+        "pending_signals": {
+          "$signal": {
+            ".write": "auth != null && auth.uid === $uid && data.exists() && data.child('status').val() === 'PENDING' && (newData.child('status').val() === 'CONFIRMED' || newData.child('status').val() === 'REJECTED')"
+          }
+        }
+      }
+    }
+  }
+}

@@ -10,6 +10,7 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { initializeApp, getApps } from 'firebase/app';
 import { getDatabase, ref, onValue, set, update } from 'firebase/database';
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword } from 'firebase/auth';
 
 // ── Firebase config ────────────────────────────────────────────────
 const FIREBASE_CONFIG = {
@@ -21,10 +22,13 @@ const FIREBASE_CONFIG = {
   messagingSenderId: "58146334585",
   appId: "1:58146334585:web:ef38eb25b1f3bc863ef1a8",
 };
-const USER_ID = "RcB4T6930SVvE4Lt9mCSs6nbG1G2";
+// Set only after Firebase Auth establishes a session. Database rules must
+// independently require auth.uid, so this is never an authorization control.
+let activeUserId = null;
 
 const firebaseApp = getApps().length === 0 ? initializeApp(FIREBASE_CONFIG) : getApps()[0];
 const db = getDatabase(firebaseApp);
+const auth = getAuth(firebaseApp);
 
 const Tab = createBottomTabNavigator();
 
@@ -83,6 +87,7 @@ function useFirebaseValue(path, fallback = null) {
     let active = true;
     let unsubscribe = () => {};
 
+    if (!path) return undefined;
     try {
       unsubscribe = onValue(
         ref(db, path),
@@ -349,8 +354,8 @@ const SignalCard = memo(function SignalCard({ sigKey, sig, isExpanded, isBusy, o
 // DASHBOARD SCREEN
 // ════════════════════════════════════════════════════════════════════
 const DashboardScreen = memo(function DashboardScreen() {
-  const [status, statusErr] = useFirebaseValue(`users/${USER_ID}/bot_status`);
-  const [braveConfig, configErr] = useFirebaseValue(`users/${USER_ID}/brave_config`);
+  const [status, statusErr] = useFirebaseValue(`users/${activeUserId}/bot_status`);
+  const [braveConfig, configErr] = useFirebaseValue(`users/${activeUserId}/brave_config`);
   const [refreshing, setRefreshing] = useState(false);
   const [actionError, setActionError] = useState(null);
 
@@ -362,14 +367,14 @@ const DashboardScreen = memo(function DashboardScreen() {
 
   const sendCommand = useCallback(async (action) => {
     setActionError(await writeToDb(
-      () => set(ref(db, `users/${USER_ID}/commands`), { action, timestamp: new Date().toISOString() }),
+      () => set(ref(db, `users/${activeUserId}/commands`), { action, timestamp: new Date().toISOString() }),
       `${action.toUpperCase()} command`,
     ));
   }, []);
 
   const toggleMode = useCallback(async (manual) => {
     setActionError(await writeToDb(
-      () => update(ref(db, `users/${USER_ID}/brave_config`), { execution_mode: manual ? 'MANUAL' : 'AUTO' }),
+      () => update(ref(db, `users/${activeUserId}/brave_config`), { execution_mode: manual ? 'MANUAL' : 'AUTO' }),
       'Mode change',
     ));
   }, []);
@@ -501,7 +506,7 @@ const DashboardScreen = memo(function DashboardScreen() {
 // SIGNALS SCREEN
 // ════════════════════════════════════════════════════════════════════
 const SignalsScreen = memo(function SignalsScreen() {
-  const [signals, signalsErr] = useFirebaseValue(`users/${USER_ID}/pending_signals`, {});
+  const [signals, signalsErr] = useFirebaseValue(`users/${activeUserId}/pending_signals`, {});
   const [expandedIds, setExpandedIds] = useState({});
   const [busyKey, setBusyKey] = useState(null);
   const [actionError, setActionError] = useState(null);
@@ -512,7 +517,7 @@ const SignalsScreen = memo(function SignalsScreen() {
   const respond = useCallback(async (key, response) => {
     setBusyKey(key);
     const error = await writeToDb(
-      () => update(ref(db, `users/${USER_ID}/pending_signals/${key}`), {
+      () => update(ref(db, `users/${activeUserId}/pending_signals/${key}`), {
         status: response,
         responded_at: new Date().toISOString(),
       }),
@@ -578,7 +583,7 @@ const SignalsScreen = memo(function SignalsScreen() {
 // INSIGHTS SCREEN — news only (DeepSeek verdict over Finnhub headlines)
 // ════════════════════════════════════════════════════════════════════
 const InsightsScreen = memo(function InsightsScreen() {
-  const [news, newsErr] = useFirebaseValue(`users/${USER_ID}/news_analysis`, {});
+  const [news, newsErr] = useFirebaseValue(`users/${activeUserId}/news_analysis`, {});
 
   const entries = useMemo(() => {
     const sort = byNewest(v => v.updated_at);
@@ -660,7 +665,7 @@ const InsightsScreen = memo(function InsightsScreen() {
 // ALERTS SCREEN
 // ════════════════════════════════════════════════════════════════════
 const AlertsScreen = memo(function AlertsScreen() {
-  const [alerts, alertsErr] = useFirebaseValue(`users/${USER_ID}/alerts`, {});
+  const [alerts, alertsErr] = useFirebaseValue(`users/${activeUserId}/alerts`, {});
 
   const data = useMemo(() => {
     const sort = byNewest(v => v.sent_at);
@@ -745,6 +750,8 @@ const AlertsScreen = memo(function AlertsScreen() {
 // ════════════════════════════════════════════════════════════════════
 const PASSWORD_MASK = '••••••••';
 
+/* Removed security-sensitive broker credential editor. Broker secrets remain
+   on the trusted MT5 host and are never written from this client.
 const BrokerAccountCard = memo(function BrokerAccountCard() {
   const [mt5Config, configErr] = useFirebaseValue(`users/${USER_ID}/mt5_config`);
 
@@ -929,12 +936,13 @@ const BrokerAccountCard = memo(function BrokerAccountCard() {
 // Bot health is written every HEALTH_CHECK_INTERVAL (600s). Trust the
 // stored mt5_connected flag only while the bot is running and the health
 // write is fresher than ~2× that interval (~20 min).
+*/
 const HEALTH_FRESH_MS = 20 * 60 * 1000;
 
 const SettingsScreen = memo(function SettingsScreen() {
-  const [braveConfig, configErr] = useFirebaseValue(`users/${USER_ID}/brave_config`);
-  const [botStatus] = useFirebaseValue(`users/${USER_ID}/bot_status`);
-  const [health, healthErr] = useFirebaseValue(`users/${USER_ID}/health`);
+  const [braveConfig, configErr] = useFirebaseValue(`users/${activeUserId}/brave_config`);
+  const [botStatus] = useFirebaseValue(`users/${activeUserId}/bot_status`);
+  const [health, healthErr] = useFirebaseValue(`users/${activeUserId}/health`);
   const [expanded, setExpanded] = useState(false);
   const [actionError, setActionError] = useState(null);
 
@@ -947,9 +955,8 @@ const SettingsScreen = memo(function SettingsScreen() {
 
   const toggleFrost = useCallback(async (next) => {
     setActionError(await writeToDb(
-      () => update(ref(db, `users/${USER_ID}/brave_config`), {
+      () => update(ref(db, `users/${activeUserId}/brave_config`), {
         'strategy_config/frost/enabled': next,
-        active_strategy: 'frost',
       }),
       next ? 'Enabling Frost' : 'Disabling Frost',
     ));
@@ -987,7 +994,12 @@ const SettingsScreen = memo(function SettingsScreen() {
         <Banner message={(configErr || healthErr) && `Connection problem — ${configErr || healthErr}`} />
         <Banner message={actionError} />
 
-        <BrokerAccountCard />
+        <View style={s.setCard}>
+          <Text style={s.setLabel}>Broker credentials</Text>
+          <Text style={s.fieldNote}>
+            Broker credentials are no longer stored or edited through Firebase. Configure them locally on the machine that runs MT5.
+          </Text>
+        </View>
 
         <View style={s.setCard}>
           <TouchableOpacity
@@ -1122,52 +1134,72 @@ const TAB_ICONS = {
   Settings: 'cog-outline',
 };
 
+function SignInScreen() {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const submit = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await signInWithEmailAndPassword(auth, email.trim(), password);
+    } catch (e) {
+      setError(e?.message || 'Sign-in failed');
+    } finally {
+      setBusy(false);
+    }
+  }, [email, password]);
+
+  return (
+    <View style={[s.safe, { justifyContent: 'center', padding: 24 }]}>
+      <Text style={[s.setLabel, { fontSize: 26, marginBottom: 12 }]}>Brave sign in</Text>
+      <Text style={[s.fieldNote, { marginTop: 0, marginBottom: 20 }]}>Use the Firebase account authorized for this trading profile.</Text>
+      <Banner message={error} />
+      <TextInput style={s.input} value={email} onChangeText={setEmail} placeholder="Email" placeholderTextColor={theme.textMuted} autoCapitalize="none" autoCorrect={false} keyboardType="email-address" />
+      <TextInput style={[s.input, { marginTop: 12 }]} value={password} onChangeText={setPassword} placeholder="Password" placeholderTextColor={theme.textMuted} secureTextEntry autoCapitalize="none" autoCorrect={false} />
+      <TouchableOpacity style={[s.saveBtn, busy && { opacity: 0.6 }]} onPress={submit} disabled={busy}>
+        {busy ? <ActivityIndicator color={theme.textPrimary} /> : <Text style={s.saveBtnTxt}>SIGN IN</Text>}
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+function AuthenticatedApp() {
+  return (
+    <NavigationContainer>
+      <Tab.Navigator
+        screenOptions={({ route }) => ({
+          headerShown: false,
+          tabBarShowLabel: false,
+          tabBarStyle: { position: 'absolute', backgroundColor: theme.surface, bottom: 22, left: 18, right: 18, height: 74, borderRadius: theme.radius.lg, borderTopWidth: 0, paddingBottom: 0, paddingTop: 4 },
+          tabBarActiveTintColor: theme.accent,
+          tabBarInactiveTintColor: theme.textMuted,
+          tabBarIcon: ({ focused }) => <View style={[s.tabPill, focused && s.tabPillActive]}><MaterialCommunityIcons name={TAB_ICONS[route.name] || 'help'} size={21} color={focused ? theme.accent : theme.textMuted} /><Text style={[s.tabLbl, { color: focused ? theme.textPrimary : theme.textMuted }]}>{route.name}</Text></View>,
+        })}
+      >
+        <Tab.Screen name="Dashboard" component={DashboardScreen} />
+        <Tab.Screen name="Signals" component={SignalsScreen} />
+        <Tab.Screen name="Insights" component={InsightsScreen} />
+        <Tab.Screen name="Alerts" component={AlertsScreen} />
+        <Tab.Screen name="Settings" component={SettingsScreen} />
+      </Tab.Navigator>
+    </NavigationContainer>
+  );
+}
+
 export default function App() {
+  const [user, setUser] = useState(undefined);
+  useEffect(() => onAuthStateChanged(auth, setUser), []);
+  activeUserId = user?.uid || null;
+
   return (
     <SafeAreaProvider>
       <SafeAreaView style={{ flex: 1, backgroundColor: theme.bg }} edges={['top', 'left', 'right']}>
         <StatusBar style="light" backgroundColor={theme.bg} translucent={false} />
         <ErrorBoundary>
-          <NavigationContainer>
-            <Tab.Navigator
-              screenOptions={({ route }) => ({
-                headerShown: false,
-                tabBarShowLabel: false,
-                tabBarStyle: {
-                  position: 'absolute',
-                  backgroundColor: theme.surface,
-                  bottom: 22,
-                  left: 18,
-                  right: 18,
-                  height: 74,
-                  borderRadius: theme.radius.lg,
-                  borderTopWidth: 0,
-                  paddingBottom: 0,
-                  paddingTop: 4,
-                },
-                tabBarActiveTintColor: theme.accent,
-                tabBarInactiveTintColor: theme.textMuted,
-                tabBarIcon: ({ focused }) => (
-                  <View style={[s.tabPill, focused && s.tabPillActive]}>
-                    <MaterialCommunityIcons
-                      name={TAB_ICONS[route.name] || 'help'}
-                      size={21}
-                      color={focused ? theme.accent : theme.textMuted}
-                    />
-                    <Text style={[s.tabLbl, { color: focused ? theme.textPrimary : theme.textMuted }]}>
-                      {route.name}
-                    </Text>
-                  </View>
-                ),
-              })}
-            >
-              <Tab.Screen name="Dashboard" component={DashboardScreen} />
-              <Tab.Screen name="Signals" component={SignalsScreen} />
-              <Tab.Screen name="Insights" component={InsightsScreen} />
-              <Tab.Screen name="Alerts" component={AlertsScreen} />
-              <Tab.Screen name="Settings" component={SettingsScreen} />
-            </Tab.Navigator>
-          </NavigationContainer>
+          {user === undefined ? <ActivityIndicator color={theme.accent} /> : (user ? <AuthenticatedApp /> : <SignInScreen />)}
         </ErrorBoundary>
       </SafeAreaView>
     </SafeAreaProvider>

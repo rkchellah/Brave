@@ -24,6 +24,7 @@ import os
 import sys
 import time as time_module
 import traceback
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import MetaTrader5 as mt5
@@ -153,8 +154,8 @@ class BraveBot:
                 "these symbols will NOT be paused around high-impact events"
             )
 
-        # Firebase comes up first: broker credentials live in mt5_config and
-        # must be readable before the MT5 login attempt.
+        # Firebase comes up first for remote control. Broker credentials remain
+        # local-only (environment or terminal prompt).
         self.firebase_enabled = self._init_firebase()
         if not self.firebase_enabled:
             log.warning("Firebase disabled — running in LOCAL MODE (no app control, AUTO only)")
@@ -203,6 +204,11 @@ class BraveBot:
                 default_login=MT5_LOGIN,
                 default_server=MT5_SERVER,
             )
+
+        # Do not fetch broker passwords from Firebase. A headless process must
+        # be configured with MT5_* through its OS/service secret store; the
+        # empty password below causes startup to fail closed otherwise.
+        return MT5_LOGIN, MT5_PASSWORD, MT5_SERVER, "local configuration"
 
         log.warning(
             "No terminal to prompt on and MT5_LOGIN/MT5_PASSWORD/MT5_SERVER not all set "
@@ -315,7 +321,6 @@ class BraveBot:
             self.alerts_ref          = db.reference(f"{base}/alerts")
             self.pending_signals_ref = db.reference(f"{base}/pending_signals")
             self.news_analysis_ref   = db.reference(f"{base}/news_analysis")
-            self.mt5_config_ref      = db.reference(f"{base}/mt5_config")
             self.market_status_ref   = db.reference(f"{base}/market_status")
 
             self.config_ref.get()  # connection test — raises if unreachable
@@ -996,11 +1001,21 @@ class BraveBot:
     def _claim_signal(self, key: str) -> bool:
         """Mark a signal EXECUTING so a second cycle can't pick it up. False if the write failed."""
         try:
-            self.pending_signals_ref.child(key).update({
-                "status":      "EXECUTING",
-                "claimed_at":  datetime.now(timezone.utc).isoformat(),
-            })
-            return True
+            claim_id = uuid.uuid4().hex
+            now = datetime.now(timezone.utc)
+
+            def claim(current):
+                if not isinstance(current, dict) or str(current.get("status", "")).upper() != "CONFIRMED":
+                    return current
+                try:
+                    if float(current.get("expires_at")) < now.timestamp():
+                        return current
+                except (TypeError, ValueError):
+                    return current
+                return {**current, "status": "EXECUTING", "claimed_at": now.isoformat(), "claim_id": claim_id}
+
+            claimed = self.pending_signals_ref.child(key).transaction(claim)
+            return isinstance(claimed, dict) and claimed.get("claim_id") == claim_id
         except Exception as e:
             log.error(f"Could not claim signal {key}: {e}")
             return False

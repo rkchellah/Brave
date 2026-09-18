@@ -42,6 +42,12 @@ MT5_CONFIG_PATH = f"users/{USER_ID}/mt5_config"
 
 
 def main() -> None:
+    sys.exit(
+        "This legacy script is disabled: Brave no longer stores broker passwords in Firebase. "
+        "Configure MT5 credentials locally on the trusted bot host instead."
+    )
+
+    # Kept below temporarily for migration reference only; unreachable by design.
     parser = argparse.ArgumentParser(description="Seed mt5_config in Firebase from config.py.")
     parser.add_argument("--force", action="store_true", help="overwrite an existing mt5_config node")
     args = parser.parse_args()

@@ -80,6 +80,18 @@ Install the APK on an Android device. The app reads live from Firebase Realtime 
 
 Bot health is HEALTHY only when MT5 is connected, Firebase is reachable, the broker account allows trading, **and** the local MT5 AutoTrading toolbar toggle is on. A True→False flip on that toggle pushes an alert to the app.
 
+## Security migration notice
+
+The mobile app now requires Firebase Email/Password Authentication and uses the
+authenticated UID for its database path. Before running it, enable that provider,
+create the operator account, set the bot's `USER_ID` to that account's UID, and
+deploy `firebase.database.rules.json` using the instructions in
+`SECURITY_OPERATIONS.md`.
+
+Broker passwords must not be stored in Firebase. Configure MT5 credentials only
+on the trusted bot host (interactive prompt or OS/service environment secrets).
+The legacy `seed_mt5_config.py` command is deliberately disabled.
+
 ## Connecting Firebase
 
 The bot writes under `users/{USER_ID}/`:
